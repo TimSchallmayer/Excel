@@ -1,6 +1,4 @@
 pandas
 openpyxl
-matplotlib
 numpy
-xlrd
 requests

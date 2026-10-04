@@ -1,17 +1,15 @@
 # Physik-Diagramm-Assistent
 
-Ein kleiner Python-Prototyp, der Messwerte aus Excel einliest, lokale Physikregeln anwendet und ein Diagramm als PNG speichert. Die Excel-Datei wird nicht verändert. Optional kann die Anwendung bei mehrdeutiger Spaltenauswahl einen OpenAI-kompatiblen KI-Endpunkt befragen. Die Antwort wird als JSON validiert; KI-generierter Code wird nie ausgeführt.
+Ein Python-Prototyp, der Messwerte aus Excel einliest, lokale Physikregeln anwendet und eine Kopie der Arbeitsmappe mit einem **nativen Excel-XY-Streudiagramm** erstellt. Die Quelldatei bleibt unverändert. Optional kann bei mehrdeutiger Spaltenauswahl ein OpenAI-kompatibler KI-Endpunkt befragt werden.
 
 ## Voraussetzungen
 
 - Windows 10 oder neuer
 - Python 3.10 oder neuer
 
-Python für Windows kann von [python.org](https://www.python.org/downloads/) installiert werden. Beim Installer die Option **Add python.exe to PATH** aktivieren. Danach ein neues Terminal öffnen und `python --version` prüfen.
+Python für Windows ist unter [python.org](https://www.python.org/downloads/) verfügbar. Beim Installer **Add python.exe to PATH** aktivieren und anschließend `python --version` prüfen.
 
 ## Einrichtung unter Windows PowerShell
-
-Im Projektordner diese Befehle nacheinander ausführen:
 
 ```powershell
 python -m venv .venv
@@ -20,60 +18,54 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-Falls PowerShell das Aktivierungsskript wegen der Ausführungsrichtlinie blockiert, gilt die Freigabe nur für das aktuelle Terminal:
+Falls PowerShell die Aktivierung blockiert, kann sie für das aktuelle Terminal freigegeben werden:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\.venv\Scripts\Activate.ps1
 ```
 
-Alternativ kann die Umgebung ohne Aktivierung verwendet werden:
+In `cmd.exe` lautet der Aktivierungsbefehl `.venv\Scripts\activate.bat`.
 
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe main.py messwerte.xlsx
-```
-
-In der klassischen Eingabeaufforderung (cmd.exe) lautet der Aktivierungsbefehl `.venv\Scripts\activate.bat`.
-
-## Start
-
-Lokale automatische Analyse:
+## Excel-Diagramm erzeugen
 
 ```powershell
 python main.py messwerte.xlsx
 ```
 
-Spalten ausdrücklich festlegen:
+Das erzeugt standardmäßig `messwerte_physik.xlsx`. Die ursprüngliche Datei wird nicht verändert. Falls die Ausgabe schon existiert, wird ein freier Name wie `messwerte_physik_2.xlsx` verwendet.
+
+Spalten können explizit gewählt werden:
 
 ```powershell
-python main.py messwerte.xlsx --x "Zeit [s]" --y "Spannung [V]"
+python main.py messwerte.xlsx --x "Zeit [s]" --y "Strecke [m]"
 ```
 
-KI bei mehrdeutiger automatischer Auswahl zulassen:
+Weitere Optionen:
+
+```powershell
+python main.py messwerte.xlsx --sheet Messreihe --fit quadratic
+python main.py messwerte.xlsx --output Ergebnisse.xlsx --fit linear
+```
+
+Unterstützt werden `.xlsx` und `.xlsm`. Bei `.xlsm` wird die Arbeitsmappe mit `keep_vba=True` gespeichert, damit VBA-Inhalte nach Möglichkeit erhalten bleiben. Openpyxl kann digitale VBA-Signaturen nicht erhalten. Alte `.xls`-Dateien werden nicht unterstützt.
+
+Das Diagramm ist ein Excel-XY-Streudiagramm auf dem ursprünglichen Datenblatt, rechts neben den Daten. Ein verborgenes Hilfsblatt enthält bereinigte Diagrammwerte. Excel zeigt darin Messpunkte, beschriftete Achsen, sinnvolle Grenzen und bei passender Auswahl eine native lineare, quadratische oder kubische Trendlinie. Wenn Fehlerwerte erkannt werden, wird eine native benutzerdefinierte Fehlerbalkenreihe angelegt. Openpyxl bildet pro Datenreihe derzeit nur eine Fehlerbalkenrichtung ab; wenn x- und y-Unsicherheiten gleichzeitig vorhanden sind, wird die y-Richtung bevorzugt. Es findet keine PNG-Erzeugung statt.
+
+## Lokale Analyse und KI
+
+Lokale Physikregeln werden zuerst angewendet. Bei eindeutigen Fällen braucht `--ai` keine Anfrage; bei mehrdeutiger automatischer Auswahl kann die KI die Diagrammspezifikation liefern:
 
 ```powershell
 python main.py messwerte.xlsx --ai
-python main.py messwerte.xlsx --ai --show
+python main.py --test-ai
 ```
 
-Eindeutige lokale Erkennungen werden weiterhin lokal entschieden; dabei wird trotz `--ai` keine API-Anfrage gesendet. Explizite `--x`- und `--y`-Angaben haben Vorrang und verwenden ebenfalls keine KI. Weitere Optionen:
-
-```powershell
-python main.py messwerte.xlsx --sheet Messreihe --fit linear --output diagramm.png
-```
-
-Unterstützte Eingaben sind `.xlsx`, `.xlsm` und `.xls`. Für `.xls` wird `xlrd` verwendet; `.xlsx` und `.xlsm` werden mit `openpyxl` gelesen.
-
-## KI-Konfiguration
-
-Kopiere die Beispieldatei in PowerShell:
+Kopiere `config.json.example` nach `config.json` und trage Endpoint und Modell des OpenAI-kompatiblen Dienstes ein:
 
 ```powershell
 Copy-Item config.json.example config.json
 ```
-
-Bearbeite anschließend `config.json` und setze mindestens Endpoint und Modell passend zu deinem Anbieter:
 
 ```json
 {
@@ -83,46 +75,42 @@ Bearbeite anschließend `config.json` und setze mindestens Endpoint und Modell p
 }
 ```
 
-- `endpoint`: vollständige URL für OpenAI-kompatible Chat Completions, etwa von OpenRouter oder einem lokalen Ollama-Server
-- `api_key`: optionaler Schlüssel; falls gesetzt, wird er ausschließlich als `Authorization: Bearer ...`-Header übertragen
-- `model`: Modellkennung, die der Server erwartet
+`api_key` ist optional, sofern der Dienst keinen Schlüssel verlangt. Ein gesetzter Schlüssel wird nur im Authorization-Header gesendet. `config.json` ist in `.gitignore` eingetragen. Echte Schlüssel gehören nicht in Python-Code, README, Beispieldateien oder Git. Bei versehentlicher Veröffentlichung den Schlüssel beim Anbieter widerrufen. KI-Antworten werden streng als JSON geprüft; Python- oder Excel-Code aus Antworten wird niemals ausgeführt.
 
-Die optionale KI-Verbindung lässt sich testen, ohne eine Arbeitsmappe anzugeben:
+Die Tabellenanfrage ist kompakt begrenzt und enthält höchstens 40 Spalten sowie 30 verteilte Messzeilen. Nutze `--ai` nur, wenn die Messdaten an den konfigurierten Anbieter übertragen werden dürfen.
 
-```powershell
-python main.py --test-ai
-```
+## Pakete
 
-`config.json` ist in `.gitignore` eingetragen und wird nicht versioniert. Trage niemals echte Schlüssel in Python-Dateien, `config.json.example`, README, Screenshots oder Git ein. Falls ein Schlüssel versehentlich veröffentlicht wurde, widerrufe ihn beim Anbieter und erstelle einen neuen. HTTP-Fehlerausgaben enthalten keine API-Antworttexte oder Schlüssel.
+- `pandas`: Excel-Messwerte für die Analyse einlesen
+- `openpyxl`: Arbeitsmappen erhalten, native Excel-Diagramme erzeugen, `.xlsx` und `.xlsm` speichern
+- `numpy`: numerische Spalten, endliche Werte und Fits
+- `requests`: OpenAI-kompatible HTTP-Anfragen
 
-An die KI werden höchstens 40 Spalten und 30 gleichmäßig verteilte Zeilen als kompakte Vorschau übertragen. Die Anfrage enthält erkannte Größen, Einheiten, numerische Spalten und mögliche Fehlerwertspalten. Bei erfolgreicher Antwort akzeptiert Python nur die erlaubten JSON-Felder, prüft Spalten, Datentypen, Diagrammart, Trendlinie, Achsengrenzen und Confidence und erzeugt daraus ein `ChartSpecification`-Objekt. KI-Antworten werden niemals als Python- oder Excel-Code ausgeführt.
+Es wird kein Plotting-Paket benötigt.
 
-## Abhängigkeiten
+## Testen
 
-- `pandas`: Tabellen einlesen und Messwerte verarbeiten
-- `openpyxl`: `.xlsx` und `.xlsm`
-- `xlrd`: ältere `.xls`-Dateien
-- `numpy`: numerische Berechnungen und Fits
-- `matplotlib`: Diagramm und PNG-Ausgabe
-- `requests`: HTTP-Aufruf an den KI-Endpunkt
-
-## Tests
-
-Die Tests benötigen keine API-Zugangsdaten und senden keine echten Anfragen:
+Die Tests verwenden temporäre Excel-Dateien und gemockte KI-Antworten; sie benötigen keine API-Zugangsdaten:
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
 
-## Beispiel für eine Excel-Tabelle
+Die Integrationstests öffnen die gespeicherten Dateien mit openpyxl erneut und prüfen, dass im Arbeitsblatt ein echtes `ScatterChart` liegt.
 
-Die erste Zeile enthält die Spaltenüberschriften. Die optionale Fehlerwertspalte wird für Fehlerbalken erkannt:
+## Beispiel für Messwerte
+
+Eine Excel-Tabelle mit diesen Spalten kann direkt als `messwerte.xlsx` gespeichert werden:
 
 | Zeit [s] | Strecke [m] | Strecke Fehler [m] |
 |---:|---:|---:|
-| 0 | 0 | 0.1 |
+| 0 | 0.0 | 0.1 |
 | 1 | 2.1 | 0.1 |
 | 2 | 3.9 | 0.2 |
 | 3 | 6.2 | 0.2 |
 
-Das erzeugte Diagramm wird standardmäßig als `<Dateiname>_diagramm.png` gespeichert.
+```powershell
+python main.py messwerte.xlsx
+```
+
+Ergebnis: `messwerte_physik.xlsx` mit den ursprünglichen Messdaten und einem nativen Excel-Diagramm.

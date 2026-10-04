@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 
 try:
-    import matplotlib.pyplot as plt
     import numpy as np
     import pandas as pd
 except ImportError as exc:
@@ -18,103 +17,9 @@ except ImportError as exc:
 
 from ai import AIServiceError, analyze_with_ai, test_ai_connection
 from config import load_config
-from excel import get_numeric_columns, load_workbook
+from excel import get_numeric_columns, load_workbook, output_path_for, save_workbook_with_chart
 from models import ChartSpecification
 from physics import choose_columns, identify_column, linear_fit
-
-
-def create_plot(frame: pd.DataFrame, spec: ChartSpecification, output: Path,
-                fit: str, show: bool) -> None:
-    data = pd.DataFrame({
-        "x": pd.to_numeric(frame[spec.x_column], errors="coerce"),
-        "y": pd.to_numeric(frame[spec.y_column], errors="coerce"),
-    })
-    if spec.x_error_column:
-        data["xerr"] = pd.to_numeric(frame[spec.x_error_column], errors="coerce")
-    if spec.y_error_column:
-        data["yerr"] = pd.to_numeric(frame[spec.y_error_column], errors="coerce")
-    data = data.replace([np.inf, -np.inf], np.nan).dropna(subset=["x", "y"]).sort_values("x")
-    for error_name in ("xerr", "yerr"):
-        if error_name in data:
-            data[error_name] = data[error_name].where(
-                np.isfinite(data[error_name]) & (data[error_name] >= 0)
-            )
-    if len(data) < 2:
-        raise ValueError("Mindestens zwei vollständige Messwertpaare sind erforderlich.")
-    x, y = data.x.to_numpy(dtype=float), data.y.to_numpy(dtype=float)
-    if np.unique(x).size < 2:
-        raise ValueError("Die x-Spalte muss mindestens zwei unterschiedliche Messwerte enthalten.")
-
-    fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
-    try:
-        if spec.chart_type == "scatter":
-            line_format = "o" if spec.show_points else "none"
-        elif spec.chart_type == "line":
-            line_format = "-o" if spec.show_points else "-"
-        else:
-            line_format = "-o" if spec.show_points else "-"
-        ax.errorbar(
-            x,
-            y,
-            xerr=data["xerr"] if spec.x_error_column and "xerr" in data else None,
-            yerr=data["yerr"] if spec.y_error_column and "yerr" in data else None,
-            fmt=line_format,
-            capsize=3,
-            color="#1769aa",
-            ecolor="#777",
-            label="Messwerte",
-        )
-        ax.set(
-            xlabel=spec.x_label,
-            ylabel=spec.y_label,
-            title=f"{spec.y_label} in Abhängigkeit von {spec.x_label}",
-        )
-        ax.grid(True, linestyle=":", alpha=.65)
-        if fit != "none":
-            if fit == "linear":
-                slope, intercept, r_squared = linear_fit(x, y)
-                curve = lambda values: slope * values + intercept
-                fit_label = f"Lineare Ausgleichsgerade (R² = {r_squared:.4f})"
-                print(f"Ausgleich: y = {slope:.6g} x + {intercept:.6g}; R² = {r_squared:.6g}")
-            else:
-                degree = 2 if fit == "quadratic" else 3
-                if len(x) <= degree or np.unique(x).size <= degree:
-                    raise ValueError(
-                        f"Ein Fit vom Grad {degree} benötigt mindestens {degree + 1} "
-                        "Messpunkte mit unterschiedlichen x-Werten."
-                    )
-                coefficients = np.polyfit(x, y, degree)
-                curve = lambda values: np.polyval(coefficients, values)
-                fit_label = f"Polynomfit (Grad {degree})"
-                print("Polynomkoeffizienten:", coefficients)
-            x_values = np.linspace(float(x.min()), float(x.max()), 200)
-            ax.plot(x_values, curve(x_values), color="#d1495b", label=fit_label)
-            ax.legend()
-
-        use_zero = spec.origin is True or spec.origin == "yes" or (
-            spec.origin == "auto"
-            and spec.x_quantity != "Temperatur"
-            and spec.y_quantity != "Temperatur"
-            and x.min() >= 0
-            and y.min() >= 0
-        )
-        if use_zero:
-            if x.min() >= 0:
-                ax.set_xlim(left=0)
-            if y.min() >= 0:
-                ax.set_ylim(bottom=0)
-        if spec.x_min is not None or spec.x_max is not None:
-            ax.set_xlim(left=spec.x_min, right=spec.x_max)
-        if spec.y_min is not None or spec.y_max is not None:
-            ax.set_ylim(bottom=spec.y_min, top=spec.y_max)
-
-        output.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(output, dpi=180, bbox_inches="tight")
-        print(f"Diagramm gespeichert: {output.resolve()}")
-        if show:
-            plt.show()
-    finally:
-        plt.close(fig)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -122,15 +27,14 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.reconfigure(errors="backslashreplace")
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(errors="backslashreplace")
-    parser = argparse.ArgumentParser(description="Erstellt ein Physikdiagramm aus Excel-Messwerten.")
-    parser.add_argument("datei", type=Path, nargs="?", help="Excel-Datei (.xlsx/.xlsm/.xls)")
+    parser = argparse.ArgumentParser(description="Erstellt ein natives Excel-Physikdiagramm aus Messwerten.")
+    parser.add_argument("datei", type=Path, nargs="?", help="Excel-Datei (.xlsx/.xlsm)")
     parser.add_argument("--sheet", default="0", help="Tabellenblattname oder nullbasierter Index (Standard: 0)")
     parser.add_argument("--x", help="Unabhängige Variable (Spaltenüberschrift)")
     parser.add_argument("--y", help="Abhängige Variable (Spaltenüberschrift)")
-    parser.add_argument("--output", type=Path, help="Ausgabedatei; Standard: <Dateiname>_diagramm.png")
+    parser.add_argument("--output", type=Path, help="Ausgabedatei; Standard: <Dateiname>_physik.xlsx")
     parser.add_argument("--fit", choices=("auto", "none", "linear", "quadratic", "cubic"), default="auto")
     parser.add_argument("--zero", choices=("auto", "yes", "no"), default="auto", help="Nullpunkt der Achsen")
-    parser.add_argument("--show", action="store_true", help="Diagramm nach dem Speichern anzeigen")
     parser.add_argument("--ai", action="store_true", help="Bei mehrdeutiger Spaltenauswahl KI-Diagnose verwenden")
     parser.add_argument("--test-ai", action="store_true", help="Verbindung zur konfigurierten KI testen")
     args = parser.parse_args(argv)
@@ -146,9 +50,12 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("Eine Excel-Datei ist erforderlich, außer bei --test-ai.")
     if not args.datei.is_file():
         parser.error(f"Datei nicht gefunden: {args.datei}")
+    if args.datei.suffix.lower() not in {".xlsx", ".xlsm"}:
+        parser.error("Unterstützt werden .xlsx- und .xlsm-Dateien.")
     sheet = int(args.sheet) if args.sheet.isdigit() else args.sheet
     try:
         frame = load_workbook(args.datei, sheet)
+        print(f"Excel-Datei geladen: {args.datei}")
         if frame.empty:
             raise ValueError("Das Tabellenblatt enthält keine Daten.")
         columns = get_numeric_columns(frame)
@@ -233,8 +140,15 @@ def main(argv: list[str] | None = None) -> int:
             if valid.sum() >= 3 and np.unique(x_values[valid]).size >= 2:
                 if linear_fit(x_values[valid], y_values[valid])[2] >= 0.85:
                     fit = "linear"
-        output = args.output or args.datei.with_name(f"{args.datei.stem}_diagramm.png")
-        create_plot(frame, spec, output, fit, args.show)
+        spec.trendline = fit
+        output = args.output or output_path_for(args.datei)
+        print(f"x-Achse: {spec.x_label}")
+        print(f"y-Achse: {spec.y_label}")
+        print("Diagrammtyp: XY-Streudiagramm")
+        print(f"Trendlinie: {fit}")
+        output = save_workbook_with_chart(args.datei, frame, sheet, spec, fit, output)
+        print("Diagramm erstellt.")
+        print(f"Ausgabedatei: {output.resolve()}")
         return 0
     except (AIServiceError, FileNotFoundError, ValueError, OSError, KeyError, ImportError) as exc:
         print(f"Fehler: {exc}", file=sys.stderr)

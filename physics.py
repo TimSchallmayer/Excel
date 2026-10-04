@@ -60,18 +60,25 @@ def identify_column(column: object) -> tuple[str | None, str, bool]:
 	raw = str(column).strip()
 	name = normalize(raw)
 	is_error = bool(re.search(r"fehler|unsicherheit|uncertainty|error|delta|±|Δ", name, re.IGNORECASE))
-	match = re.search(r"[\[(]\s*([^\])]+)\s*[\])]", raw)
-	if not match:
-		match = re.search(r"\s+([a-zµω°]+(?:/[a-z0-9²³]+)?)\s*$", name, re.IGNORECASE)
+	bracketed_unit = re.search(r"[\[(]\s*([^\])]+)\s*[\])]", raw)
+	suffix_unit = None if bracketed_unit else re.search(
+		r"\s+([a-zµω°]+(?:/[a-z0-9²³]+)?)\s*$", name, re.IGNORECASE
+	)
+	match = bracketed_unit or suffix_unit
 	unit = match.group(1).strip().replace("²", "2").replace("³", "3") if match else ""
-	if unit.lower() in UNIT_QUANTITY:
-		quantity, display_unit = UNIT_QUANTITY[unit.lower()]
-		return quantity, display_unit, is_error
 	base = normalize(re.sub(r"[\[(].*?[\])]", "", raw))
-	base = re.sub(r"\s+[a-zµω°]+(?:/[a-z0-9²³]+)?$", "", base, flags=re.IGNORECASE)
+	if suffix_unit:
+		base = re.sub(r"\s+[a-zµω°]+(?:/[a-z0-9²³]+)?$", "", base, flags=re.IGNORECASE)
 	for entry in QUANTITIES.values():
 		if any(re.search(rf"\b{re.escape(alias)}\b", base) for alias in entry[2]):
+			unit_info = UNIT_QUANTITY.get(unit.lower())
+			if unit_info and unit_info[0] in {entry[0], "Strecke" if entry[0] == "Dehnung" else entry[0]}:
+				return entry[0], unit_info[1], is_error
 			return entry[0], entry[1], is_error
+	if unit.lower() in UNIT_QUANTITY:
+		quantity, display_unit = UNIT_QUANTITY[unit.lower()]
+		if bracketed_unit or len(unit) > 1 or unit in {"ω", "°"}:
+			return quantity, display_unit, is_error
 	return None, "", is_error
 
 
