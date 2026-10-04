@@ -34,7 +34,7 @@ class ExcelChartIntegrationTests(unittest.TestCase):
 			"--fit", "none",
 		])
 		self.assertEqual(result, 0)
-		output = path.with_name("messwerte_physik.xlsx")
+		output = path.with_name(f"{path.stem}_PLVS_ULTRA_Graphs{path.suffix.lower()}")
 		self.assertTrue(output.is_file())
 		workbook = load_workbook(output)
 		worksheet = workbook["Messwerte"]
@@ -72,13 +72,13 @@ class ExcelChartIntegrationTests(unittest.TestCase):
 		with tempfile.TemporaryDirectory() as folder:
 			path = self._make_workbook(folder, ["Zeit [s]", "Strecke [m]"], [])
 			self.assertEqual(main.main([str(path)]), 2)
-			self.assertFalse(path.with_name("messwerte_physik.xlsx").exists())
+			self.assertFalse(path.with_name(f"{path.stem}_PLVS_ULTRA_Graphs{path.suffix.lower()}").exists())
 
 	def test_single_numeric_column_is_rejected(self) -> None:
 		with tempfile.TemporaryDirectory() as folder:
 			path = self._make_workbook(folder, ["Zeit [s]", "Notiz"], [(0, "a"), (1, "b"), (2, "c")])
 			self.assertEqual(main.main([str(path)]), 2)
-			self.assertFalse(path.with_name("messwerte_physik.xlsx").exists())
+			self.assertFalse(path.with_name(f"{path.stem}_PLVS_ULTRA_Graphs{path.suffix.lower()}").exists())
 
 	def test_error_column_is_added_as_native_error_bars(self) -> None:
 		with tempfile.TemporaryDirectory() as folder:
@@ -88,7 +88,7 @@ class ExcelChartIntegrationTests(unittest.TestCase):
 				[(0, 0, 0.1), (1, 2, 0.2), (2, 4, 0.1)],
 			)
 			self.assertEqual(main.main([str(path), "--fit", "none"]), 0)
-			workbook = load_workbook(path.with_name("messwerte_physik.xlsx"))
+			workbook = load_workbook(path.with_name(f"{path.stem}_PLVS_ULTRA_Graphs{path.suffix.lower()}"))
 			chart = workbook["Messwerte"]._charts[0]
 			self.assertEqual(chart.series[0].errBars.errDir, "y")
 			self.assertEqual(chart.series[0].errBars.errValType, "cust")
@@ -102,7 +102,7 @@ class ExcelChartIntegrationTests(unittest.TestCase):
 				[(19, 1), (20, 2), (21, 3)],
 			)
 			self.assertEqual(main.main([str(path), "--fit", "none"]), 0)
-			workbook = load_workbook(path.with_name("messwerte_physik.xlsx"))
+			workbook = load_workbook(path.with_name(f"{path.stem}_PLVS_ULTRA_Graphs{path.suffix.lower()}"))
 			chart = workbook["Messwerte"]._charts[0]
 			self.assertGreater(chart.x_axis.scaling.min, 0)
 			workbook.close()
@@ -114,7 +114,7 @@ class ExcelChartIntegrationTests(unittest.TestCase):
 			first = self._run_and_check_chart(path, "Zeit [s]", "Strecke [m]")
 			self.assertEqual(main.main([str(path), "--x", "Zeit [s]", "--y", "Strecke [m]", "--fit", "none"]), 0)
 			self.assertEqual(first.read_bytes()[:2], b"PK")
-			self.assertTrue(path.with_name("messwerte_physik_2.xlsx").is_file())
+			self.assertTrue(path.with_name(f"{path.stem}_PLVS_ULTRA_Graphs_2{path.suffix.lower()}").is_file())
 			self.assertEqual(path.read_bytes(), original)
 
 	def test_existing_explicit_output_gets_a_unique_name(self) -> None:
@@ -133,7 +133,7 @@ class ExcelChartIntegrationTests(unittest.TestCase):
 		with tempfile.TemporaryDirectory() as folder:
 			path = self._make_workbook(folder, ["Zeit [s]", "Strecke [m]"], [(0, 0), (1, 2), (2, 4)])
 			self.assertEqual(main.main([str(path), "--x", "Zeit [s]", "--y", "Strecke [m]", "--fit", "linear"]), 0)
-			workbook = load_workbook(path.with_name("messwerte_physik.xlsx"))
+			workbook = load_workbook(path.with_name(f"{path.stem}_PLVS_ULTRA_Graphs{path.suffix.lower()}"))
 			chart = workbook["Messwerte"]._charts[0]
 			self.assertEqual(chart.series[0].trendline.trendlineType, "linear")
 			workbook.close()
@@ -146,7 +146,7 @@ class ExcelChartIntegrationTests(unittest.TestCase):
 				self.assertEqual(main.main([
 					str(path), "--x", "Zeit [s]", "--y", "Strecke [m]", "--fit", fit,
 				]), 0)
-				workbook = load_workbook(path.with_name("messwerte_physik.xlsx"))
+				workbook = load_workbook(path.with_name(f"{path.stem}_PLVS_ULTRA_Graphs{path.suffix.lower()}"))
 				chart = workbook["Messwerte"]._charts[0]
 				self.assertEqual(chart.series[0].trendline.trendlineType, "poly")
 				self.assertEqual(chart.series[0].trendline.order, order)
@@ -163,7 +163,7 @@ class ExcelChartIntegrationTests(unittest.TestCase):
 				worksheet.append(row)
 			workbook.save(path)
 			self.assertEqual(main.main([str(path), "--fit", "none"]), 0)
-			output = path.with_name("messwerte_physik.xlsm")
+			output = path.with_name(f"{path.stem}_PLVS_ULTRA_Graphs{path.suffix.lower()}")
 			self.assertTrue(output.is_file())
 			result = load_workbook(output, keep_vba=True)
 			self.assertEqual(len(result["Messwerte"]._charts), 1)

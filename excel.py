@@ -63,7 +63,7 @@ def _axis_bounds(
 	data_min = float(np.min(values))
 	data_max = float(np.max(values))
 	span = data_max - data_min
-	padding = span * 0.05 if span else max(abs(data_min) * 0.05, 1.0)
+	padding = span * 0.08 if span else max(abs(data_min) * 0.08, 1.0)
 	low = minimum if minimum is not None else data_min - padding
 	high = maximum if maximum is not None else data_max + padding
 	if use_zero and data_min >= 0 and (minimum is None or minimum <= 0):
@@ -72,6 +72,10 @@ def _axis_bounds(
 		high = 0.0
 	if not math.isfinite(low) or not math.isfinite(high) or low >= high:
 		raise ValueError("Die Diagramm-Achsengrenzen sind ungültig.")
+	if data_min < 0 < data_max and minimum is None and maximum is None and not use_zero:
+		low = min(low, 0.0)
+		if high > 0:
+			high = max(high, 0.0)
 	return low, high
 
 
@@ -195,8 +199,9 @@ def create_excel_chart(
 			)
 		error_bar_columns.append((column_index, direction))
 	if error_bar_columns:
+		preferred_direction = "y" if any(direction == "y" for _, direction in error_bar_columns) else "x"
 		selected_error_bars = next(
-			(error for error in error_bar_columns if error[1] == "y"),
+			(error for error in error_bar_columns if error[1] == preferred_direction),
 			error_bar_columns[0],
 		)
 		_append_error_bars(series, chart_data, selected_error_bars[0], 2, last_row, selected_error_bars[1])

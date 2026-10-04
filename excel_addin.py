@@ -25,7 +25,8 @@ BUTTON_ACTIONS = (
 	("PLVS_ULTRA_Analyze", "ANALYSIEREN", 3, 42),
 	("PLVS_ULTRA_CreateChart", "DIAGRAMM ERSTELLEN", 5, 50),
 	("PLVS_ULTRA_AISettings", "KI-EINSTELLUNGEN", 8, 42),
-	("PLVS_ULTRA_Help", "HILFE", 10, 42),
+	("PLVS_ULTRA_ShowAnalysis", "ANALYSE", 10, 42),
+	("PLVS_ULTRA_Help", "HILFE", 12, 42),
 )
 
 
@@ -38,6 +39,9 @@ def _active_book() -> xw.Book:
 
 def _message(book: xw.Book, text: str, error: bool = False) -> None:
 	try:
+		if not book.app.visible:
+			book.app.api.StatusBar = text
+			return
 		import ctypes
 		flags = 0x10 if error else 0x40
 		ctypes.windll.user32.MessageBoxW(int(book.app.api.Hwnd), text, PRODUCT_NAME, flags)
@@ -51,8 +55,10 @@ def _safe_action(action) -> None:
 		book = _active_book()
 		action(book)
 	except Exception as exc:
-		message = str(exc) or "Unerwarteter Fehler im Physik-Assistenten."
+		message = str(exc) or "Unerwarteter Fehler in PLVS ULTRA Graphs."
 		if book is not None:
+			if ASSISTANT_SHEET in [sheet.name for sheet in book.sheets]:
+				book.sheets[ASSISTANT_SHEET].range("B12").value = message
 			_message(book, message, error=True)
 		else:
 			raise
@@ -111,7 +117,7 @@ def _ensure_dashboard_buttons(sheet: xw.Sheet) -> None:
 		shape.TextFrame2.TextRange.Font.Fill.ForeColor.RGB = 0xFFFFFF
 		shape.Fill.ForeColor.RGB = 0x1A323E if action_name == "PLVS_ULTRA_CreateChart" else 0x1E6A5F
 		shape.Line.Visible = 0
-		shape.OnAction = action_name
+		shape.OnAction = f"'{sheet.book.name}'!{action_name}"
 
 
 def ensure_dashboard(book: xw.Book | None = None) -> xw.Sheet:
@@ -160,7 +166,7 @@ def _settings_sheet(book: xw.Book, refresh_columns: list[str] | None = None) -> 
 		initial_sheet_name = book.sheets.active.name
 		sheet = book.sheets.add(ASSISTANT_SHEET, before=book.sheets[0])
 		sheet.range("A1").value = PRODUCT_NAME
-		sheet.range("A2").value = "Intelligenter Assistent für physikalische Messreihen"
+		sheet.range("A2").value = "Excel-Dashboard für Messreihen"
 		sheet.range("A3:A12").value = [
 			["Aktuelles Arbeitsblatt"], ["Unabhängige Größe"], ["Abhängige Größe"], ["Diagrammtyp"],
 			["Ausgleich"], ["Ursprung bei 0"], ["Arbeitsmodus"], ["KI bei Unsicherheit"],
@@ -216,7 +222,7 @@ def _settings_sheet(book: xw.Book, refresh_columns: list[str] | None = None) -> 
 	if sheet.range("A1").value != PRODUCT_NAME:
 		sheet.range("A1").value = PRODUCT_NAME
 	if not sheet.range("A2").value:
-		sheet.range("A2").value = "Intelligenter Assistent für physikalische Messreihen"
+			sheet.range("A2").value = "Excel-Dashboard für Messreihen"
 	if refresh_columns is not None:
 		sheet.range("J:J").api.EntireColumn.Hidden = True
 		options = ["automatisch", *refresh_columns]
@@ -270,7 +276,7 @@ def open_settings() -> None:
 		validation.Add(Type=3, AlertStyle=1, Operator=1, Formula1=f"=$I$1:$I${len(data_sheets)}")
 		sheet.activate()
 		sheet.range("B4").select()
-		book.app.api.StatusBar = "Physik-Assistent: Messspalten, Fit, Ursprung und Ausgabeoptionen einstellen."
+		book.app.api.StatusBar = f"{PRODUCT_NAME}: Messspalten, Fit, Ursprung und Ausgabeoptionen einstellen."
 	_safe_action(action)
 
 
@@ -296,6 +302,7 @@ def open_ai_settings() -> None:
 		sheet.range("E6").value = "Vorhanden (lokal gespeichert)" if config["api_key"] else "Nicht gesetzt"
 		_write_status(book, "KI-Konfiguration lokal gespeichert.")
 		_message(book, f"Endpoint und Modell gespeichert. API-Key wird ausschließlich lokal gespeichert: {path}")
+		book.app.api.StatusBar = f"{PRODUCT_NAME}: KI-Konfiguration lokal gespeichert."
 	_safe_action(action)
 
 
@@ -304,7 +311,7 @@ def _prompt_choice(book: xw.Book, label: str, options: list[str], default: str |
 		raise ValueError(f"Keine möglichen Werte für {label} gefunden.")
 	default_text = f"\nVorschlag: {default}" if default else ""
 	prompt = f"{label}:\n" + "\n".join(f"- {option}" for option in options) + default_text
-	response = book.app.api.InputBox(prompt, "Physik-Assistent", default or options[0], Type=2)
+	response = book.app.api.InputBox(prompt, PRODUCT_NAME, default or options[0], Type=2)
 	if response is False or response is None:
 		raise ValueError("Auswahl abgebrochen.")
 	choice = str(response).strip()
@@ -465,6 +472,21 @@ def _write_analysis(book: xw.Book, spec: ChartSpecification, candidates: list) -
 	return sheet
 
 
+def show_help() -> None:
+	def action(book: xw.Book) -> None:
+		help_text = (
+			f"{PRODUCT_NAME}\n\n"
+			"- Analysiert Messwerttabellen im aktiven Excel-Blatt.\n"
+			"- Erkennt physikalische Größen, Einheiten und potenzielle Beziehungen.\n"
+			"- Erstellt ein natives Excel-Diagramm im geöffneten Workbook.\n"
+			"- Die KI wird nur bei mehrdeutigen Fällen verwendet.\n"
+			"- Wenn die Confidence niedrig ist, bleibt die Auswahl nachvollziehbar und manuell prüfbar."
+		)
+		_message(book, help_text)
+		_write_status(book, "Hilfe angezeigt.")
+	_safe_action(action)
+
+
 def _get_ai_config(book: xw.Book) -> dict[str, str]:
 	try:
 		config = load_config()
@@ -508,7 +530,7 @@ def show_analysis() -> None:
 			raise ValueError("Keine geeigneten Messwertspalten gefunden.")
 		spec, candidates = _resolve_spec(book, frame, columns, allow_ai=False)
 		_write_analysis(book, spec, candidates)
-		_write_status(book, "Analyse wird auf dem Blatt Physik-Analyse angezeigt.")
+		_write_status(book, "Analyse auf dem PLVS ULTRA Graphs-Dashboard aktualisiert.")
 	_safe_action(action)
 
 
@@ -540,7 +562,7 @@ def _chart_data(
 	while name in [sheet.name for sheet in book.sheets]:
 		name = f"_PhysikDiagrammDaten_{index}"
 		index += 1
-	helper = book.sheets.add(name, after=book.sheets[-1])
+	helper = book.sheets.add(name, before=book.sheets[0])
 	chart_rows: list[list[Any]] = [chart_frame.columns.tolist(), *chart_frame.values.tolist()]
 	for direction, error_column in (("y", spec.y_error_column), ("x", spec.x_error_column)):
 		if not error_column:
@@ -676,7 +698,7 @@ def test_ai() -> None:
 		_settings_sheet(book)
 		config = _get_ai_config(book)
 		if not config["endpoint"] or not config["model"]:
-			raise AIServiceError("KI-Einstellungen unvollständig. Endpoint und Modell auf der Seite Physik-Assistent eintragen; den API-Key in config.json.")
+			raise AIServiceError("KI-Einstellungen unvollständig. Endpoint und Modell im Dashboard eintragen; den API-Key in config.json.")
 		test_ai_connection(config)
 		_write_status(book, "KI-Verbindung erfolgreich.")
 		_message(book, "KI-Verbindung erfolgreich.")

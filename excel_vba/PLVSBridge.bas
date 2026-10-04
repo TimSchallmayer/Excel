@@ -5,6 +5,10 @@ Public Sub PLVS_ULTRA_Analyze()
     RunPython "import excel_addin; excel_addin.analyze_table()"
 End Sub
 
+Public Sub PLVS_ULTRA_ShowAnalysis()
+    RunPython "import excel_addin; excel_addin.show_analysis()"
+End Sub
+
 Public Sub PLVS_ULTRA_CreateChart()
     RunPython "import excel_addin; excel_addin.create_chart()"
 End Sub

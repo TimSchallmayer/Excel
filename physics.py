@@ -56,11 +56,17 @@ QUANTITIES = {
 	"brechungsindex": ("Brechungsindex", "", ("brechungsindex", "refractive index")),
 	"lichtgeschwindigkeit": ("Lichtgeschwindigkeit", "m/s", ("lichtgeschwindigkeit", "speed of light")),
 	"intensitaet": ("Intensität", "W/m²", ("intensitat", "intensität", "lichtintensitat", "light intensity")),
+	"photonenenergie": ("Photonenenergie", "J", ("photonenenergie", "photon energy", "energie photon")),
+	"wellenzahl": ("Wellenzahl", "1/m", ("wellenzahl", "wave number", "wavevector")),
+	"leitfaehigkeit": ("Leitfähigkeit", "S", ("leitfahigkeit", "leitfähigkeit", "conductivity", "electrical conductivity")),
 	"halbwertszeit": ("Halbwertszeit", "s", ("halbwertszeit", "half-life")),
 	"aktivitaet": ("Aktivität", "Bq", ("aktivitat", "aktivität", "radioaktivitat", "radioaktivität", "activity")),
 	"dosis": ("Dosis", "Gy", ("dosis", "absorbierte dosis", "dose")),
 	"auslenkung": ("Auslenkung", "m", ("auslenkung", "displacement")),
 	"wellengeschwindigkeit": ("Wellengeschwindigkeit", "m/s", ("wellengeschwindigkeit", "wave speed")),
+	"strahlungsfluss": ("Strahlungsfluss", "W", ("strahlungsfluss", "radiant flux")),
+	"leistungsdichte": ("Leistungsdichte", "W/m²", ("leistungsdichte", "power density")),
+	"magnetische_fluxdichte": ("Magnetische Flussdichte", "T", ("magnetische flussdichte", "flussdichte", "magnetic flux density")),
 }
 
 UNIT_QUANTITY = {
@@ -90,6 +96,8 @@ UNIT_QUANTITY = {
 	"rad": ("Winkel", "rad"), "bq": ("Aktivität", "Bq"),
 	"gy": ("Dosis", "Gy"), "sv": ("Dosis", "Sv"),
 	"w/m2": ("Intensität", "W/m²"), "m/s²": ("Beschleunigung", "m/s²"),
+	"s": ("Leitfähigkeit", "S"), "ms": ("Leitfähigkeit", "mS"),
+	"1/m": ("Wellenzahl", "1/m"),
 }
 
 RELATIONSHIP_RULES: tuple[RelationshipHint, ...] = (
@@ -250,26 +258,48 @@ def choose_columns(
 		if requested and requested not in names:
 			raise ValueError(f"Spalte {requested!r} nicht gefunden. Verfügbar: {', '.join(names)}")
 	measurement_columns = [column for column in columns if not identify_column(column)[2]] or columns
-	x_column = x_arg or next(
-		(column for column in measurement_columns if identify_column(column)[0] == "Zeit"),
-		measurement_columns[0],
-	)
-	if y_arg:
-		y_column = y_arg
+	if x_arg and y_arg:
+		x_column, y_column = x_arg, y_arg
 	else:
-		possible = [column for column in columns if column != x_column and not identify_column(column)[2]]
-		recognized = [column for column in possible if identify_column(column)[0]]
-		choices = recognized or possible
-		if not choices:
+		candidate_pairs: list[tuple[float, str, str]] = []
+		for x_candidate in measurement_columns:
+			for y_candidate in measurement_columns:
+				if x_candidate == y_candidate:
+					continue
+				x_quantity, x_unit, _ = identify_column(x_candidate)
+				y_quantity, y_unit, _ = identify_column(y_candidate)
+				score = 0.0
+				if x_quantity == "Zeit":
+					score += 6.0
+				if y_quantity == "Zeit":
+					score -= 3.0
+				if x_unit and y_unit and x_unit != y_unit:
+					score += 1.5
+				if x_quantity and y_quantity and {x_quantity, y_quantity} in ({"Zeit", "Strecke"}, {"Zeit", "Geschwindigkeit"}, {"Zeit", "Beschleunigung"}, {"Spannung", "Stromstärke"}, {"Frequenz", "Wellenlänge"}):
+					score += 2.0
+				if x_quantity and y_quantity:
+					score += 0.5
+				if any(token in normalize(x_candidate) for token in ("zeit", "time", "dauer")):
+					score += 1.5
+				if any(token in normalize(y_candidate) for token in ("fehler", "error", "delta", "unsicherheit")):
+					score -= 10.0
+				score += 0.25 * len([t for t in (x_candidate, y_candidate) if identify_column(t)[0]])
+				candidate_pairs.append((score, x_candidate, y_candidate))
+		if not candidate_pairs:
 			raise ValueError("Keine zweite numerische Messspalte gefunden.")
-		y_column = choices[0]
-		if len(choices) > 1:
-			print("Mögliche y-Spalten: " + ", ".join(choices))
-			answer = input(f"y-Spalte auswählen (Enter für {y_column}): ").strip()
-			if answer:
-				if answer not in choices:
-					raise ValueError(f"Ungültige y-Spalte: {answer!r}")
-				y_column = answer
+		candidate_pairs.sort(key=lambda item: item[0], reverse=True)
+		best_score, best_x, best_y = candidate_pairs[0]
+		preferred = [(score, x, y) for score, x, y in candidate_pairs if score >= best_score - 0.1]
+		if len(preferred) > 1:
+			for _, x_candidate, y_candidate in preferred:
+				if identify_column(x_candidate)[0] == "Zeit":
+					best_x, best_y = x_candidate, y_candidate
+					break
+			else:
+				best_x, best_y = preferred[0][1], preferred[0][2]
+		else:
+			best_x, best_y = best_x, best_y
+		x_column, y_column = x_arg or best_x, y_arg or best_y
 	if x_column == y_column or x_column not in columns or y_column not in columns:
 		raise ValueError("x- und y-Spalte müssen unterschiedliche numerische Spalten sein.")
 	return x_column, y_column
