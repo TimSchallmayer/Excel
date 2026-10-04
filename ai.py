@@ -13,7 +13,7 @@ import pandas as pd
 import requests
 
 from models import ChartSpecification
-from physics import identify_column
+from physics import identify_column, relationship_hints
 from prompts import ANALYSIS_SYSTEM_PROMPT
 
 AI_TIMEOUT_SECONDS = 30
@@ -209,12 +209,14 @@ def validate_ai_response(
 	if not isinstance(chart_type, str) or chart_type not in {"scatter", "line", "line_scatter"}:
 		raise AIServiceError("Die Diagrammart muss scatter, line oder line_scatter sein.")
 	trendline = response["trendline"]
-	if not isinstance(trendline, str) or trendline not in {"none", "linear", "quadratic"}:
-		raise AIServiceError("Die Trendlinie muss none, linear oder quadratic sein.")
+	if not isinstance(trendline, str) or trendline not in {"none", "linear", "quadratic", "cubic"}:
+		raise AIServiceError("Die Trendlinie muss none, linear, quadratic oder cubic sein.")
 	if trendline == "linear" and np.unique(values[x_column]).size < 2:
 		raise AIServiceError("Ein linearer Fit benötigt mindestens zwei unterschiedliche x-Werte.")
 	if trendline == "quadratic" and np.unique(values[x_column]).size < 3:
 		raise AIServiceError("Ein quadratischer Fit benötigt mindestens drei unterschiedliche x-Werte.")
+	if trendline == "cubic" and np.unique(values[x_column]).size < 4:
+		raise AIServiceError("Ein kubischer Fit benötigt mindestens vier unterschiedliche x-Werte.")
 
 	string_fields = (
 		"independent_variable", "dependent_variable", "x_axis_label", "y_axis_label", "x_unit", "y_unit", "reason",
@@ -335,8 +337,19 @@ def _table_context(data: pd.DataFrame, columns: list[str]) -> dict[str, Any]:
 		{column: _cell_value(data.iloc[index][column]) for column in data_columns}
 		for index in indexes
 	]
+	hints = relationship_hints([info["quantity"] for info in column_info])
 	return {
 		"columns": column_info,
+		"local_relationship_hints": [
+			{
+				"x_quantity": hint.x_quantity,
+				"y_quantity": hint.y_quantity,
+				"formula": hint.formula,
+				"context": hint.context,
+				"confidence": hint.confidence,
+			}
+			for hint in hints
+		],
 		"sampled_data_columns": data_columns,
 		"table_row_count": int(len(data)),
 		"sampled_rows_count": len(rows),

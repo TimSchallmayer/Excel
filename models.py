@@ -27,5 +27,35 @@ class ChartSpecification:
 	independent_variable: str | None = None
 	dependent_variable: str | None = None
 	show_points: bool = True
+	connect_points: bool = False
 	confidence: float | None = None
 	reason: str = ""
+
+
+@dataclass(frozen=True)
+class ColumnInfo:
+	name: str
+	quantity: str | None
+	unit: str
+	numeric: bool
+	is_error: bool
+	finite_count: int
+	unique_count: int
+
+
+@dataclass(frozen=True)
+class RelationshipHint:
+	x_quantity: str
+	y_quantity: str
+	formula: str
+	context: str
+	confidence: float
+
+
+@dataclass(frozen=True)
+class ChartCandidate:
+	x_column: str
+	y_column: str
+	relationship: str
+	reason: str
+	confidence: float

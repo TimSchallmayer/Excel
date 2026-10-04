@@ -82,6 +82,11 @@ class AIValidationTests(unittest.TestCase):
 		with self.assertRaisesRegex(AIServiceError, "zwischen 0 und 1"):
 			validate_ai_response(answer, self.data, self.columns)
 
+	def test_cubic_trendline_requires_four_distinct_x_values(self) -> None:
+		answer = self.answer | {"trendline": "cubic"}
+		with self.assertRaisesRegex(AIServiceError, "mindestens vier"):
+			validate_ai_response(answer, self.data, self.columns)
+
 	@patch("ai._post_chat_completion")
 	def test_api_json_is_parsed_and_validated(self, post: Mock) -> None:
 		post.return_value = {
