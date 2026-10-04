@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import TypedDict
 
 
@@ -37,3 +38,22 @@ def load_config(path: Path | None = None) -> AIConfig:
 			raise ValueError(f"Der Konfigurationswert {key} muss Text sein.")
 		config[key] = value.strip()
 	return config
+
+
+def save_config(config: AIConfig, path: Path | None = None) -> Path:
+	"""Speichert Zugangsdaten lokal; der Aufrufer darf Werte nicht protokollieren."""
+	if path is None:
+		path = Path(__file__).with_name("config.json")
+	path.parent.mkdir(parents=True, exist_ok=True)
+	validated: AIConfig = {}
+	for key in DEFAULT_CONFIG:
+		value = config.get(key, "")
+		if not isinstance(value, str):
+			raise ValueError(f"Der Konfigurationswert {key} muss Text sein.")
+		validated[key] = value.strip()
+	with NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False, suffix=".tmp") as temporary:
+		json.dump(validated, temporary, ensure_ascii=False, indent=2)
+		temporary.write("\n")
+		temporary_path = Path(temporary.name)
+	temporary_path.replace(path)
+	return path

@@ -1,7 +1,8 @@
-"""Excel-Ribbon-Brücke: xlwings stellt aktive Arbeitsmappe und Excel-UI bereit."""
+"""Excel-Arbeitsblatt-GUI: Shapes rufen VBA auf, VBA ruft diese xlwings-Aktionen."""
 
 from __future__ import annotations
 
+from config import load_config, save_config
 import math
 from pathlib import Path
 from typing import Any
@@ -12,27 +13,34 @@ import xlwings as xw
 
 from ai import AIServiceError, analyze_with_ai, test_ai_connection
 from config import load_config
-from excel import get_numeric_columns, output_path_for
+from excel import get_numeric_columns
 from models import ChartSpecification
 from physics import identify_column, infer_chart_candidates, linear_fit
 
 
-ASSISTANT_SHEET = "Physik-Assistent"
-ANALYSIS_SHEET = "Physik-Analyse"
+PRODUCT_NAME = "PLVS ULTRA Graphs"
+ASSISTANT_SHEET = PRODUCT_NAME
+ANALYSIS_SHEET = PRODUCT_NAME
+BUTTON_ACTIONS = (
+	("PLVS_ULTRA_Analyze", "ANALYSIEREN", 3, 42),
+	("PLVS_ULTRA_CreateChart", "DIAGRAMM ERSTELLEN", 5, 50),
+	("PLVS_ULTRA_AISettings", "KI-EINSTELLUNGEN", 8, 42),
+	("PLVS_ULTRA_Help", "HILFE", 10, 42),
+)
 
 
 def _active_book() -> xw.Book:
 	try:
 		return xw.Book.caller()
 	except Exception as exc:
-		raise RuntimeError("Keine aktive Excel-Arbeitsmappe gefunden. Starte die Aktion aus dem Physik-Assistent-Ribbon.") from exc
+		raise RuntimeError(f"Keine aktive Arbeitsmappe gefunden. Starte die Aktion über das Blatt {PRODUCT_NAME}.") from exc
 
 
 def _message(book: xw.Book, text: str, error: bool = False) -> None:
 	try:
 		import ctypes
 		flags = 0x10 if error else 0x40
-		ctypes.windll.user32.MessageBoxW(int(book.app.api.Hwnd), text, "Physik-Assistent", flags)
+		ctypes.windll.user32.MessageBoxW(int(book.app.api.Hwnd), text, PRODUCT_NAME, flags)
 	except Exception:
 		book.app.api.StatusBar = text
 
@@ -85,6 +93,52 @@ def _frame_from_sheet(sheet: xw.Sheet) -> pd.DataFrame:
 	return frame
 
 
+def _ensure_dashboard_buttons(sheet: xw.Sheet) -> None:
+	shapes = sheet.api.Shapes
+	for action_name, caption, row, height in BUTTON_ACTIONS:
+		shape_name = f"PLVS_{action_name.removeprefix('PLVS_ULTRA_')}"
+		try:
+			shape = shapes.Item(shape_name)
+		except Exception:
+			left = float(sheet.range(f"G{row}").api.Left)
+			top = float(sheet.range(f"G{row}").api.Top)
+			width = 230
+			shape = shapes.AddShape(1, left, top, width, height)
+			shape.Name = shape_name
+		shape.TextFrame2.TextRange.Text = caption
+		shape.TextFrame2.TextRange.Font.Size = 12
+		shape.TextFrame2.TextRange.Font.Bold = True
+		shape.TextFrame2.TextRange.Font.Fill.ForeColor.RGB = 0xFFFFFF
+		shape.Fill.ForeColor.RGB = 0x1A323E if action_name == "PLVS_ULTRA_CreateChart" else 0x1E6A5F
+		shape.Line.Visible = 0
+		shape.OnAction = action_name
+
+
+def ensure_dashboard(book: xw.Book | None = None) -> xw.Sheet:
+	"""Erstellt oder repariert das Dashboardblatt samt Shape-Buttons."""
+	if book is None:
+		book = _active_book()
+	sheet = _settings_sheet(book)
+	try:
+		data_sheet = _active_data_sheet(book)
+		frame = _frame_from_sheet(data_sheet)
+		columns = get_numeric_columns(frame)
+		if not sheet.range("B3").value:
+			sheet.range("B3").value = data_sheet.name
+		for cell, value in (("B4", "automatisch"), ("B5", "automatisch"), ("B6", "XY-Streudiagramm"), ("B7", "auto"), ("B8", "auto"), ("B9", "Aktuelle Arbeitsmappe"), ("B10", "Nein")):
+			if not sheet.range(cell).value:
+				sheet.range(cell).value = value
+		quantities = [identify_column(column)[0] for column in columns if not identify_column(column)[2]]
+		sheet.range("B11").value = ", ".join(dict.fromkeys(q for q in quantities if q)) or ", ".join(columns)
+		if not sheet.range("B12").value:
+			sheet.range("B12").value = "Bereit"
+	except ValueError as exc:
+		sheet.range("B12").value = str(exc)
+	_ensure_dashboard_buttons(sheet)
+	sheet.activate()
+	return sheet
+
+
 def _active_data_sheet(book: xw.Book) -> xw.Sheet:
 	active = book.sheets.active
 	if active.name not in {ASSISTANT_SHEET, ANALYSIS_SHEET} and not active.name.startswith("_PhysikDiagrammDaten"):
@@ -103,46 +157,66 @@ def _settings_sheet(book: xw.Book, refresh_columns: list[str] | None = None) -> 
 	if ASSISTANT_SHEET in [sheet.name for sheet in book.sheets]:
 		sheet = book.sheets[ASSISTANT_SHEET]
 	else:
-		sheet = book.sheets.add(ASSISTANT_SHEET, after=book.sheets[-1])
-		sheet.range("A1").value = "PHYSIK-DIAGRAMM-ASSISTENT"
-		sheet.range("A3:A10").value = [
-			["Aktives Tabellenblatt"], ["X-Achse"], ["Y-Achse"], ["Diagrammtyp"],
-			["Ausgleich"], ["Ursprung"], ["Ausgabe"], ["KI bei Mehrdeutigkeit"],
+		initial_sheet_name = book.sheets.active.name
+		sheet = book.sheets.add(ASSISTANT_SHEET, before=book.sheets[0])
+		sheet.range("A1").value = PRODUCT_NAME
+		sheet.range("A2").value = "Intelligenter Assistent für physikalische Messreihen"
+		sheet.range("A3:A12").value = [
+			["Aktuelles Arbeitsblatt"], ["Unabhängige Größe"], ["Abhängige Größe"], ["Diagrammtyp"],
+			["Ausgleich"], ["Ursprung bei 0"], ["Arbeitsmodus"], ["KI bei Unsicherheit"],
+			["Erkannte Messgrößen"], ["Status"],
 		]
-		sheet.range("D3:D7").value = [["KI-EINSTELLUNGEN"], ["API-Endpunkt"], ["Modell"], ["API-Key"], ["Hinweis"]]
-		sheet.range("E7").value = "Schlüssel bleibt nur in config.json"
-		sheet.range("A12").value = "Status"
-		sheet.range("B12").value = "Bereit"
-		sheet.range("A1:F1").merge()
+		sheet.range("D3:D6").value = [["KI-EINSTELLUNGEN"], ["API-Endpunkt"], ["Modell"], ["API-Key"]]
+		sheet.range("E6").value = "Nur config.json; nicht im Workbook"
+		sheet.range("A15").value = "ANALYSE"
+		sheet.range("A17:A24").value = [
+			["Unabhängige Größe"], ["Abhängige Größe"], ["Diagrammtyp"], ["Nullpunkt"],
+			["Ausgleich"], ["Fehlerbalken"], ["Confidence"], ["Begründung"],
+		]
+		sheet.range("A1:G1").merge()
+		sheet.range("A2:G2").merge()
 		sheet.range("A1").api.Font.Bold = True
-		sheet.range("A1").api.Font.Size = 16
+		sheet.range("A1").api.Font.Size = 20
+		sheet.range("A2").api.Font.Size = 11
 		sheet.range("A3:A12").api.Font.Bold = True
-		sheet.range("D3:D7").api.Font.Bold = True
-		sheet.range("A1:F1").api.Interior.Color = 26 + 50 * 256 + 62 * 65536
+		sheet.range("D3:D6").api.Font.Bold = True
+		sheet.range("A15:B15").merge()
+		sheet.range("A15").api.Font.Bold = True
+		sheet.range("A15").api.Font.Size = 14
+		sheet.range("A17:A24").api.Font.Bold = True
+		sheet.range("A1:G1").api.Interior.Color = 26 + 50 * 256 + 62 * 65536
 		sheet.range("A1").api.Font.Color = 255 * 65536 + 255 * 256 + 255
-		sheet.range("A3:A10").api.Interior.Color = 235 + 239 * 256 + 239 * 65536
-		sheet.range("B3:B10").api.Interior.Color = 255 + 248 * 256 + 224 * 65536
+		sheet.range("A3:A12").api.Interior.Color = 235 + 239 * 256 + 239 * 65536
+		sheet.range("B3:B12").api.Interior.Color = 255 + 248 * 256 + 224 * 65536
 		sheet.range("D3:E3").api.Interior.Color = 30 + 105 * 256 + 95 * 65536
 		sheet.range("D3:E3").api.Font.Color = 255 * 65536 + 255 * 256 + 255
-		sheet.range("D4:D7").api.Interior.Color = 235 + 239 * 256 + 239 * 65536
-		sheet.range("A:A").api.ColumnWidth = 26
+		sheet.range("D4:D6").api.Interior.Color = 235 + 239 * 256 + 239 * 65536
+		sheet.range("A:A").api.ColumnWidth = 27
 		sheet.range("B:B").api.ColumnWidth = 34
 		sheet.range("C:C").api.ColumnWidth = 3
-		sheet.range("D:D").api.ColumnWidth = 20
-		sheet.range("E:E").api.ColumnWidth = 54
+		sheet.range("D:D").api.ColumnWidth = 18
+		sheet.range("E:E").api.ColumnWidth = 43
+		sheet.range("F:F").api.ColumnWidth = 3
+		sheet.range("G:G").api.ColumnWidth = 32
 		sheet.range("B4:B10").value = [
 			["automatisch"], ["automatisch"], ["XY-Streudiagramm"], ["auto"],
-			["auto"], ["Kopie (Standard)"], ["Nein"],
+			["auto"], ["Aktuelle Arbeitsmappe"], ["Nein"],
 		]
-		sheet.range("B3").value = book.sheets.active.name
-		sheet.range("A14").value = "Aktionen befinden sich oben im Ribbon Physik-Assistent."
+		sheet.range("B3").value = initial_sheet_name
+		sheet.range("A26").value = "Messwerttabelle: Überschriften in der ersten Tabellenzeile, danach numerische Messwerte."
+		sheet.range("A26:G26").merge()
 		try:
 			config = load_config()
 		except (FileNotFoundError, ValueError):
 			config = {"endpoint": "", "model": "", "api_key": ""}
 		sheet.range("E4").value = config["endpoint"]
 		sheet.range("E5").value = config["model"]
-		sheet.range("E6").value = "Vorhanden" if config["api_key"] else "Nicht gesetzt (config.json)"
+		sheet.range("E6").value = "Vorhanden" if config["api_key"] else "Nur lokal in config.json"
+	_ensure_dashboard_buttons(sheet)
+	if sheet.range("A1").value != PRODUCT_NAME:
+		sheet.range("A1").value = PRODUCT_NAME
+	if not sheet.range("A2").value:
+		sheet.range("A2").value = "Intelligenter Assistent für physikalische Messreihen"
 	if refresh_columns is not None:
 		sheet.range("J:J").api.EntireColumn.Hidden = True
 		options = ["automatisch", *refresh_columns]
@@ -159,7 +233,7 @@ def _settings_sheet(book: xw.Book, refresh_columns: list[str] | None = None) -> 
 			("B6", "XY-Streudiagramm,XY mit Verbindungslinie"),
 			("B7", "auto,none,linear,quadratic,cubic"),
 			("B8", "auto,ja,nein"),
-			("B9", "Kopie (Standard),Aktuelle Datei"),
+			("B9", "Aktuelle Arbeitsmappe"),
 			("B10", "Nein,Ja"),
 		):
 			validation = sheet.range(cell).api.Validation
@@ -205,7 +279,23 @@ def open_ai_settings() -> None:
 		sheet = _settings_sheet(book)
 		sheet.activate()
 		sheet.range("E4").select()
-		_message(book, "Endpoint und Modell können rechts im Blatt bearbeitet werden.\nDer API-Key wird aus config.json gelesen und nie im Workbook gespeichert.")
+		config = _get_ai_config(book)
+		key_entry = book.app.api.InputBox(
+			"API-Key optional. Der Wert wird nur lokal in config.json gespeichert, nicht im Workbook.\nLeer lassen, um einen vorhandenen Schlüssel beizubehalten.",
+			PRODUCT_NAME,
+			"",
+			Type=2,
+		)
+		if key_entry is False:
+			return
+		config["endpoint"] = str(sheet.range("E4").value or "").strip()
+		config["model"] = str(sheet.range("E5").value or "").strip()
+		if str(key_entry).strip():
+			config["api_key"] = str(key_entry).strip()
+		path = save_config(config)
+		sheet.range("E6").value = "Vorhanden (lokal gespeichert)" if config["api_key"] else "Nicht gesetzt"
+		_write_status(book, "KI-Konfiguration lokal gespeichert.")
+		_message(book, f"Endpoint und Modell gespeichert. API-Key wird ausschließlich lokal gespeichert: {path}")
 	_safe_action(action)
 
 
@@ -229,6 +319,8 @@ def _resolve_spec(book: xw.Book, frame: pd.DataFrame, columns: list[str], allow_
 	selected_x = str(settings.range("B4").value or "automatisch").strip()
 	selected_y = str(settings.range("B5").value or "automatisch").strip()
 	best = candidates[0] if candidates else None
+	ai_spec: ChartSpecification | None = None
+	manual_confirmation_required = False
 	if selected_x not in {"", "automatisch", "auto"} and selected_x not in columns:
 		raise ValueError(f"Die eingestellte x-Spalte {selected_x!r} ist nicht numerisch oder fehlt.")
 	if selected_y not in {"", "automatisch", "auto"} and selected_y not in columns:
@@ -265,8 +357,29 @@ def _resolve_spec(book: xw.Book, frame: pd.DataFrame, columns: list[str], allow_
 			config["endpoint"] = str(settings.range("E4").value or config["endpoint"]).strip()
 			config["model"] = str(settings.range("E5").value or config["model"]).strip()
 			ai_spec = analyze_with_ai(frame, columns, config)
-			return ai_spec, candidates
-		if is_clear:
+			if ai_spec.confidence is not None and ai_spec.confidence >= 0.9:
+				ai_spec.reason = f"KI: {ai_spec.reason}"
+				return ai_spec, candidates
+			if ai_spec.confidence is not None and ai_spec.confidence >= 0.7:
+				answer = book.app.api.MsgBox(
+					f"Die KI schlägt {ai_spec.x_label} gegen {ai_spec.y_label} vor.\n\n"
+					f"Confidence: {ai_spec.confidence:.0%}\n{ai_spec.reason}\n\n"
+					"Entscheidung mit Vorbehalt übernehmen?",
+					4 + 32,
+					PRODUCT_NAME,
+				)
+				if answer == 6:
+					ai_spec.reason = f"KI: {ai_spec.reason}"
+					return ai_spec, candidates
+				manual_confirmation_required = True
+			else:
+				book.app.api.MsgBox(
+					"Die KI konnte keine ausreichend sichere Entscheidung treffen. Bitte x- und y-Größe auswählen.",
+					48,
+					PRODUCT_NAME,
+				)
+				manual_confirmation_required = True
+		if is_clear and not manual_confirmation_required:
 			x_column, y_column = best.x_column, best.y_column
 		else:
 			possible_x = list(dict.fromkeys(candidate.x_column for candidate in candidates)) or columns
@@ -319,40 +432,35 @@ def _resolve_spec(book: xw.Book, frame: pd.DataFrame, columns: list[str], allow_
 		independent_variable=x_quantity,
 		dependent_variable=y_quantity,
 		confidence=selected_candidate.confidence if selected_candidate else 1.0,
-		reason=selected_candidate.reason if selected_candidate else "Benutzer hat x- und y-Spalte ausgewählt.",
+		reason=(f"KI mit Confidence {ai_spec.confidence:.0%} verworfen; Auswahl durch Benutzer." if ai_spec is not None else selected_candidate.reason if selected_candidate else "Benutzer hat x- und y-Spalte ausgewählt."),
 	)
 	return spec, candidates
 
 
 def _analysis_rows(spec: ChartSpecification, candidates: list) -> list[list[Any]]:
+	confidence = spec.confidence or 0.0
+	confidence_label = "Entscheidung" if confidence >= 0.9 else "Mit Vorbehalt" if confidence >= 0.7 else "Manuell bestätigt"
 	return [
-		["PHYSIK-ANALYSE", ""],
 		["Unabhängige Größe", spec.x_label],
 		["Abhängige Größe", spec.y_label],
-		["Diagramm", "XY-Streudiagramm"],
+		["Diagrammtyp", "XY mit Verbindungslinie" if spec.connect_points else "XY-Streudiagramm"],
 		["Ursprung", "Ja" if spec.origin is True or spec.origin == "ja" else "Nein" if spec.origin is False or spec.origin == "nein" else "Automatisch"],
 		["Ausgleich", spec.trendline],
-		["Confidence", f"{spec.confidence:.0%}" if spec.confidence is not None else "-"],
+		["Fehlerbalken", ", ".join(name for name in (spec.x_error_column, spec.y_error_column) if name) or "Keine erkannt"],
+		["KI", "Verwendet" if spec.reason.startswith("KI:") else "Lokale Regeln / Auswahl"],
+		["Confidence", f"{confidence:.0%} ({confidence_label})"],
 		["Begründung", spec.reason],
-		["Mögliche Beziehungen", ""],
-		*[[candidate.relationship, f"{candidate.x_column} → {candidate.y_column} ({candidate.confidence:.0%})"] for candidate in candidates],
+		["Mögliche Beziehungen", "; ".join(f"{item.relationship}: {item.x_column} → {item.y_column} ({item.confidence:.0%})" for item in candidates[:5])],
 	]
 
 
 def _write_analysis(book: xw.Book, spec: ChartSpecification, candidates: list) -> xw.Sheet:
-	if ANALYSIS_SHEET in [sheet.name for sheet in book.sheets]:
-		sheet = book.sheets[ANALYSIS_SHEET]
-		sheet.clear()
-	else:
-		sheet = book.sheets.add(ANALYSIS_SHEET, after=book.sheets[-1])
-	sheet.range("A1").value = _analysis_rows(spec, candidates)
-	sheet.range("A1:B1").merge()
-	sheet.range("A1").api.Font.Bold = True
-	sheet.range("A1").api.Font.Size = 16
-	sheet.range("A2:A9").api.Font.Bold = True
-	sheet.range("A:A").api.ColumnWidth = 28
-	sheet.range("B:B").api.ColumnWidth = 72
-	sheet.range("B8").api.WrapText = True
+	sheet = _settings_sheet(book)
+	for row_index, row in enumerate(_analysis_rows(spec, candidates), start=17):
+		sheet.range(f"A{row_index}").value = row[0]
+		sheet.range(f"B{row_index}").value = row[1]
+	sheet.range("B17:B25").api.WrapText = True
+	sheet.range("A17:A25").api.Font.Bold = True
 	sheet.activate()
 	return sheet
 
@@ -412,13 +520,18 @@ def _excel_column(index: int) -> str:
 	return letters
 
 
-def _chart_data(book: xw.Book, frame: pd.DataFrame, spec: ChartSpecification) -> tuple[xw.Sheet, int]:
+def _chart_data(
+	book: xw.Book,
+	frame: pd.DataFrame,
+	spec: ChartSpecification,
+) -> tuple[xw.Sheet, int, list[tuple[str, int, int, int]]]:
 	x_values = pd.to_numeric(frame[spec.x_column], errors="coerce").to_numpy(dtype=float)
 	y_values = pd.to_numeric(frame[spec.y_column], errors="coerce").to_numpy(dtype=float)
 	valid = np.isfinite(x_values) & np.isfinite(y_values)
 	if int(valid.sum()) < 2 or np.unique(x_values[valid]).size < 2:
 		raise ValueError("Mindestens zwei gültige Messwertpaare mit verschiedenen x-Werten sind erforderlich.")
 	chart_frame = pd.DataFrame({spec.x_column: x_values[valid], spec.y_column: y_values[valid]})
+	error_series: list[tuple[str, int, int, int]] = []
 	for error_column in (spec.x_error_column, spec.y_error_column):
 		if error_column and error_column not in frame.columns:
 			raise ValueError(f"Fehlerwert-Spalte {error_column!r} existiert nicht.")
@@ -428,9 +541,39 @@ def _chart_data(book: xw.Book, frame: pd.DataFrame, spec: ChartSpecification) ->
 		name = f"_PhysikDiagrammDaten_{index}"
 		index += 1
 	helper = book.sheets.add(name, after=book.sheets[-1])
-	helper.range("A1").value = [chart_frame.columns.tolist(), *chart_frame.values.tolist()]
+	chart_rows: list[list[Any]] = [chart_frame.columns.tolist(), *chart_frame.values.tolist()]
+	for direction, error_column in (("y", spec.y_error_column), ("x", spec.x_error_column)):
+		if not error_column:
+			continue
+		errors = pd.to_numeric(frame[error_column], errors="coerce").to_numpy(dtype=float)[valid]
+		if not np.any(np.isfinite(errors) & (errors >= 0)):
+			continue
+		x_column = len(chart_rows[0]) + 1
+		y_column = x_column + 1
+		chart_rows[0].extend([f"{direction}-Fehlerbalken x", f"{direction}-Fehlerbalken y"])
+		for index, (x_value, y_value, error) in enumerate(zip(x_values[valid], y_values[valid], errors), start=1):
+			chart_rows[index].extend([None, None])
+			if not np.isfinite(error) or error < 0:
+				continue
+			if direction == "y":
+				chart_rows.extend([
+					[None] * (x_column - 1) + [float(x_value), float(y_value - error)],
+					[None] * (x_column - 1) + [float(x_value), float(y_value + error)],
+					[None] * (x_column - 1) + [None, None],
+				])
+			else:
+				chart_rows.extend([
+					[None] * (x_column - 1) + [float(x_value - error), float(y_value)],
+					[None] * (x_column - 1) + [float(x_value + error), float(y_value)],
+					[None] * (x_column - 1) + [None, None],
+				])
+		last_error_row = len(chart_rows)
+		error_series.append((direction, x_column, y_column, last_error_row))
+	width = len(chart_rows[0])
+	chart_rows = [row + [None] * (width - len(row)) for row in chart_rows]
+	helper.range("A1").value = chart_rows
 	helper.api.Visible = 2
-	return helper, len(chart_frame) + 1
+	return helper, len(chart_frame) + 1, error_series
 
 
 def _axis_bounds(values: np.ndarray, low: float | None, high: float | None, zero: bool) -> tuple[float, float]:
@@ -446,13 +589,13 @@ def _axis_bounds(values: np.ndarray, low: float | None, high: float | None, zero
 
 
 def _add_native_chart(book: xw.Book, sheet: xw.Sheet, frame: pd.DataFrame, spec: ChartSpecification) -> list[str]:
-	helper, last_row = _chart_data(book, frame, spec)
+	helper, last_row, error_series = _chart_data(book, frame, spec)
 	used = sheet.used_range.api
 	left = float(used.Left) + float(used.Width) + 24
 	top = float(used.Top)
 	chart_object = sheet.api.ChartObjects().Add(left, top, 500, 300)
 	chart = chart_object.Chart
-	chart.ChartType = -4168 if spec.connect_points or spec.chart_type in {"line", "line_scatter"} else -4169
+	chart.ChartType = 74 if spec.connect_points or spec.chart_type in {"line", "line_scatter"} else -4169
 	chart.HasTitle = True
 	chart.ChartTitle.Text = f"{spec.y_label} in Abhängigkeit von {spec.x_label}"
 	chart.HasLegend = False
@@ -462,6 +605,7 @@ def _add_native_chart(book: xw.Book, sheet: xw.Sheet, frame: pd.DataFrame, spec:
 	series.XValues = helper.range(f"{x_letter}2:{x_letter}{last_row}").api
 	series.Values = helper.range(f"{y_letter}2:{y_letter}{last_row}").api
 	series.MarkerStyle = 8 if spec.show_points else -4142
+	chart.DisplayBlanksAs = 1
 	for axis_type, label, values, minimum, maximum, quantity in (
 		(1, spec.x_label, pd.to_numeric(frame[spec.x_column], errors="coerce").to_numpy(dtype=float), spec.x_min, spec.x_max, spec.x_quantity),
 		(2, spec.y_label, pd.to_numeric(frame[spec.y_column], errors="coerce").to_numpy(dtype=float), spec.y_min, spec.y_max, spec.y_quantity),
@@ -476,6 +620,15 @@ def _add_native_chart(book: xw.Book, sheet: xw.Sheet, frame: pd.DataFrame, spec:
 		axis_minimum, axis_maximum = _axis_bounds(valid_values, minimum, maximum, is_zero)
 		axis.MinimumScale = axis_minimum
 		axis.MaximumScale = axis_maximum
+	for direction, x_column, y_column, error_last_row in error_series:
+		error_line = chart.SeriesCollection().NewSeries()
+		error_line.Name = f"{direction}-Fehler"
+		error_line.XValues = helper.range(f"{_excel_column(x_column)}2:{_excel_column(x_column)}{error_last_row}").api
+		error_line.Values = helper.range(f"{_excel_column(y_column)}2:{_excel_column(y_column)}{error_last_row}").api
+		error_line.ChartType = 74
+		error_line.MarkerStyle = -4142
+		error_line.Format.Line.ForeColor.RGB = 0x777777
+		error_line.Format.Line.Weight = 1
 	if spec.trendline != "none":
 		degree = {"linear": 1, "quadratic": 2, "cubic": 3}.get(spec.trendline)
 		if degree is None:
@@ -488,23 +641,11 @@ def _add_native_chart(book: xw.Book, sheet: xw.Sheet, frame: pd.DataFrame, spec:
 			trendlines.Add(Type=-4132, Name="Lineare Ausgleichsgerade")
 		else:
 			trendlines.Add(Type=3, Order=degree, Name=f"Polynomfit Grad {degree}")
-	warnings = []
-	if spec.x_error_column or spec.y_error_column:
-		warnings.append("Excel-COM unterstützt benutzerdefinierte Fehlerbalken in diesem Ablauf nicht zuverlässig; das Diagramm wurde ohne Fehlerbalken erstellt.")
-	return warnings
+	return []
 
 
-def _target_for(book: xw.Book, data_sheet: xw.Sheet, settings: xw.Sheet) -> tuple[xw.Sheet, str | None]:
-	mode = str(settings.range("B9").value or "Kopie (Standard)").strip()
-	if mode == "Aktuelle Datei":
-		return data_sheet, None
-	if book.name.lower().startswith("book") or not Path(book.fullname).suffix:
-		source = Path.home() / "Documents" / f"{Path(book.name).stem}_physik.xlsx"
-	else:
-		source = Path(book.fullname)
-	output = output_path_for(source)
-	book.save(output)
-	return data_sheet, str(output)
+def _target_for(book: xw.Book, data_sheet: xw.Sheet) -> tuple[xw.Sheet, None]:
+	return data_sheet, None
 
 
 def create_chart() -> None:
@@ -516,7 +657,7 @@ def create_chart() -> None:
 			raise ValueError("Keine geeigneten Messwertspalten gefunden. Mindestens zwei numerische Spalten sind erforderlich.")
 		settings = _settings_sheet(book, columns)
 		spec, candidates = _resolve_spec(book, frame, columns, allow_ai=True)
-		target_sheet, output_path = _target_for(book, data_sheet, settings)
+		target_sheet, _ = _target_for(book, data_sheet)
 		warnings = _add_native_chart(book, target_sheet, frame, spec)
 		book.save()
 		_write_analysis(book, spec, candidates)
@@ -524,8 +665,7 @@ def create_chart() -> None:
 		message = f"Diagramm erstellt: {spec.x_label} gegen {spec.y_label}."
 		if warnings:
 			message += "\n" + " ".join(warnings)
-		if output_path:
-			message += f"\nArbeitsmappenkopie: {output_path}"
+		message += "\nDiagramm direkt in der geöffneten Arbeitsmappe erstellt."
 		_write_status(book, message)
 		_message(book, message)
 	_safe_action(action)

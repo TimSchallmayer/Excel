@@ -216,7 +216,7 @@ def create_excel_chart(
 
 def output_path_for(input_path: Path) -> Path:
 	"""Wählt einen neuen Namen, ohne vorhandene Dateien zu überschreiben."""
-	base = input_path.with_name(f"{input_path.stem}_physik{input_path.suffix.lower()}")
+	base = input_path.with_name(f"{input_path.stem}_PLVS_ULTRA_Graphs{input_path.suffix.lower()}")
 	return _non_existing_path(base)
 
 

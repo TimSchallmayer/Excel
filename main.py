@@ -1,4 +1,4 @@
-"""Physik-Diagramm-Assistent für Excel-Messwerttabellen."""
+"""PLVS ULTRA Graphs: Standalone-Analyse für physikalische Excel-Messreihen."""
 
 from __future__ import annotations
 
@@ -27,12 +27,12 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.reconfigure(errors="backslashreplace")
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(errors="backslashreplace")
-    parser = argparse.ArgumentParser(description="Erstellt ein natives Excel-Physikdiagramm aus Messwerten.")
+    parser = argparse.ArgumentParser(description="PLVS ULTRA Graphs erstellt native Excel-Physikdiagramme.")
     parser.add_argument("datei", type=Path, nargs="?", help="Excel-Datei (.xlsx/.xlsm)")
     parser.add_argument("--sheet", default="0", help="Tabellenblattname oder nullbasierter Index (Standard: 0)")
     parser.add_argument("--x", help="Unabhängige Variable (Spaltenüberschrift)")
     parser.add_argument("--y", help="Abhängige Variable (Spaltenüberschrift)")
-    parser.add_argument("--output", type=Path, help="Ausgabedatei; Standard: <Dateiname>_physik.xlsx")
+    parser.add_argument("--output", type=Path, help="Ausgabedatei; Standard: <Dateiname>_PLVS_ULTRA_Graphs.xlsx")
     parser.add_argument("--fit", choices=("auto", "none", "linear", "quadratic", "cubic"), default="auto")
     parser.add_argument("--zero", choices=("auto", "yes", "no"), default="auto", help="Nullpunkt der Achsen")
     parser.add_argument("--ai", action="store_true", help="Bei mehrdeutiger Spaltenauswahl KI-Diagnose verwenden")
@@ -141,7 +141,9 @@ def main(argv: list[str] | None = None) -> int:
                 if linear_fit(x_values[valid], y_values[valid])[2] >= 0.85:
                     fit = "linear"
         spec.trendline = fit
-        output = args.output or output_path_for(args.datei)
+        output = args.output or args.datei.with_name(
+            f"{args.datei.stem}_PLVS_ULTRA_Graphs{args.datei.suffix.lower()}"
+        )
         print(f"x-Achse: {spec.x_label}")
         print(f"y-Achse: {spec.y_label}")
         print("Diagrammtyp: XY-Streudiagramm")
