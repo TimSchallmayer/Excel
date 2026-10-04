@@ -2,7 +2,7 @@
 
 PLVS ULTRA Graphs ist ein kleines Werkzeug zur Analyse physikalischer Messreihen in Excel. Es erkennt lokale Größen und Einheiten, prüft passende Zusammenhänge und erstellt ein natives Excel-XY-Diagramm mit optionalen Trendlinien. Die Ausgabe ist kein PNG, sondern eine bearbeitbare Excel-Arbeitsmappe.
 
-Es gibt kein eigenes Ribbon. Die Oberfläche liegt direkt im Excel-Arbeitsblatt `PLVS ULTRA Graphs`.
+Die Excel-Oberfläche ist ein eigenes Ribbon-Register neben der vorhandenen xlwings-Registerkarte. Das Blatt `PLVS ULTRA Graphs` bleibt als Analyse- und Statusanzeige erhalten.
 
 ## Funktionen
 
@@ -76,39 +76,34 @@ Zeit [s] | Strecke [m] | Strecke Fehler [m]
 
 Die Analyse funktioniert am zuverlässigsten mit klaren Überschriften in der ersten benutzten Zeile.
 
-## Excel-Integration
+## Excel-Ribbon
 
-Die Oberfläche ist direkt im Excel-Arbeitsblatt `PLVS ULTRA Graphs` eingebettet. Es gibt dort die einfachen Aktionen:
+Das Ribbon-Add-in hat die Gruppen **Diagramm**, **KI** und **Analyse** mit den sechs Aktionen Analysieren, Diagramm erstellen, KI testen, KI-Einstellungen, Analyse anzeigen und Hilfe. Die VBA-Callbacks rufen die vorhandenen Python-Funktionen über xlwings `RunPython` auf; analysiert wird die aktive Arbeitsmappe.
 
-- ANALYSIEREN
-- DIAGRAMM ERSTELLEN
-- KI-EINSTELLUNGEN
-- ANALYSE
-- HILFE
+### Installation
 
-Die lokale Verbindung zu Excel läuft über `xlwings`. Die verwendete Arbeitsmappe und das aktive Blatt werden über `xw.Book.caller()` bzw. das aktive Sheet des Aufrufers erkannt.
-
-### Excel-Setup
-
-1. Python-Abhängigkeiten installieren:
+PowerShell im Projektordner:
 
 ```powershell
 python -m pip install -r requirements.txt
+xlwings addin install
+.\.venv\Scripts\python.exe excel_bridge.py create-addin
 ```
 
-2. In Excel über `xlwings` eine makrofähige Arbeitsmappe öffnen oder über die Python-Bridge-Funktionen eine generierte `.xlsm`-Datei verwenden.
+In Excel unter **Datei > Optionen > Add-Ins > Verwalten: Excel-Add-Ins > Gehe zu > Durchsuchen** die Datei `dist\PLVS ULTRA Graphs Ribbon.xlam` hinzufügen und aktivieren. Das xlwings-Add-in muss ebenfalls aktiviert bleiben. Excel anschließend neu starten. Der PLVS-Tab wird per `insertAfterQ` direkt nach dem xlwings-Tab angeordnet.
 
-3. Das Dashboardblatt `PLVS ULTRA Graphs` wird automatisch ergänzt, falls es noch fehlt.
+Das Add-in speichert den Interpreterpfad auf die Projekt-`.venv`. Makros müssen aktiviert sein. Der einmalige VBA-Projektzugriff im Trust Center wird benötigt, wenn das Add-in neu erzeugt wird; für die normale Verwendung der fertigen `.xlam`-Datei nicht.
 
-4. Auf die Buttons klicken, um Analyse, Diagrammerstellung und KI-Einstellungen direkt im geöffneten Workbook zu starten.
+Das Blatt `PLVS ULTRA Graphs` wird bei Analyse/Diagrammerstellung bei Bedarf als Ergebnis- und Statusanzeige angelegt. Die sechs Aktionen bleiben im Ribbon.
 
 ## Tests
 
 ```powershell
+$env:PHYSIK_EXCEL_COM_TESTS='1'
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-Der Fokus liegt auf der Diagrammproduktion, der Physik-/Einheiten-Erkennung und der validierten Chart-Spezifikation.
+Der COM-Test benötigt Windows mit installiertem Excel. Er lädt die Add-ins und prüft die aktive Arbeitsmappe sowie das native Diagramm.
 
 ## Was das Projekt aktuell erzeugt
 

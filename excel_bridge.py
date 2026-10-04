@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+import tempfile
+import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 
 import xlwings as xw
@@ -12,9 +16,16 @@ from excel_addin import PRODUCT_NAME, ensure_dashboard
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 BRIDGE_MODULE = PROJECT_ROOT / "excel_vba" / "PLVSBridge.bas"
+RIBBON_DEFINITION = PROJECT_ROOT / "ribbon" / "customUI.xml"
 TEMPLATE_PATH = PROJECT_ROOT / "examples" / "PLVS_ULTRA_Graphs.xlsm"
 XLWINGS_VBA = Path(xw.__file__).resolve().parent / "xlwings.bas"
+XLWINGS_CUSTOM_ADDIN_VBA = Path(xw.__file__).resolve().parent / "xlwings_custom_addin.bas"
 XLSM_FILE_FORMAT = 52
+XLAM_FILE_FORMAT = 55
+CUSTOM_UI_NS = "http://schemas.microsoft.com/office/2006/01/customui"
+PACKAGE_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
+UI_RELATIONSHIP = "http://schemas.microsoft.com/office/2006/relationships/ui/extensibility"
 
 SAMPLE_ROWS = [
 	["Zeit [s]", "Strecke [m]", "Strecke Fehler [m]"],
@@ -95,6 +106,117 @@ def _install_vba_bridge(book: xw.Book) -> None:
 			workbook_module.AddFromString(f"\n{open_event}\n    {startup_call}\nEnd Sub\n")
 
 
+def _install_addin_vba(book: xw.Book) -> None:
+	if not XLWINGS_CUSTOM_ADDIN_VBA.is_file():
+		raise FileNotFoundError(f"xlwings Add-in VBA-Modul fehlt: {XLWINGS_CUSTOM_ADDIN_VBA}")
+	if not BRIDGE_MODULE.is_file():
+		raise FileNotFoundError(f"PLVS VBA-Brücke fehlt: {BRIDGE_MODULE}")
+	components = book.api.VBProject.VBComponents
+	for module_name, module_path in (
+		("xlwings", XLWINGS_CUSTOM_ADDIN_VBA),
+		("PLVSBridge", BRIDGE_MODULE),
+	):
+		for index in range(components.Count, 0, -1):
+			component = components.Item(index)
+			if component.Name == module_name:
+				components.Remove(component)
+		components.Import(str(module_path))
+
+
+def _set_addin_xlwings_config(book: xw.Book) -> None:
+	config_name = "myaddin.conf"
+	if config_name in book.sheet_names:
+		config_sheet = book.sheets[config_name]
+	else:
+		config_sheet = book.sheets.add(config_name, before=book.sheets[0])
+	config_sheet.range("A1:B2").value = [
+		["INTERPRETER_WIN", str(Path(sys.executable).resolve())],
+		["PYTHONPATH", str(PROJECT_ROOT)],
+	]
+	config_sheet.api.Visible = 2
+
+
+def _add_ribbon_to_package(addin_path: Path) -> None:
+	with zipfile.ZipFile(addin_path, "r") as source:
+		files = {info.filename: (info, source.read(info.filename)) for info in source.infolist()}
+	if "customUI/customUI.xml" in files:
+		raise ValueError("Das Add-in enthält bereits eine customUI/customUI.xml-Datei.")
+
+	ribbon_xml = RIBBON_DEFINITION.read_bytes()
+	ET.fromstring(ribbon_xml)
+	relationships_path = "_rels/.rels"
+	content_types_path = "[Content_Types].xml"
+	relationships_root = ET.fromstring(files[relationships_path][1])
+	existing_ids = {item.get("Id") for item in relationships_root}
+	rel_id = "rIdPLVSUI"
+	index = 2
+	while rel_id in existing_ids:
+		rel_id = f"rIdPLVSUI{index}"
+		index += 1
+	ET.SubElement(
+		relationships_root,
+		f"{{{PACKAGE_REL_NS}}}Relationship",
+		{"Id": rel_id, "Type": UI_RELATIONSHIP, "Target": "customUI/customUI.xml"},
+	)
+
+	content_types_root = ET.fromstring(files[content_types_path][1])
+	ET.SubElement(
+		content_types_root,
+		f"{{{CONTENT_TYPES_NS}}}Override",
+		{
+			"PartName": "/customUI/customUI.xml",
+			"ContentType": "application/vnd.ms-office.customUI+xml",
+		},
+	)
+
+	ET.register_namespace("", CUSTOM_UI_NS)
+	ET.register_namespace("r", PACKAGE_REL_NS)
+	ET.register_namespace("ct", CONTENT_TYPES_NS)
+	files["customUI/customUI.xml"] = (
+		zipfile.ZipInfo("customUI/customUI.xml"),
+		ribbon_xml,
+	)
+	files[relationships_path] = (
+		files[relationships_path][0],
+		ET.tostring(relationships_root, encoding="utf-8", xml_declaration=True),
+	)
+	files[content_types_path] = (
+		files[content_types_path][0],
+		ET.tostring(content_types_root, encoding="utf-8", xml_declaration=True),
+	)
+	with tempfile.NamedTemporaryFile(dir=addin_path.parent, suffix=".xlam", delete=False) as temporary:
+		temporary_path = Path(temporary.name)
+	try:
+		with zipfile.ZipFile(temporary_path, "w", compression=zipfile.ZIP_DEFLATED) as target:
+			for name, (info, content) in files.items():
+				target.writestr(info, content)
+		os.replace(temporary_path, addin_path)
+	finally:
+		temporary_path.unlink(missing_ok=True)
+
+
+def create_addin(output_path: Path | None = None) -> Path:
+	"""Erzeugt das PLVS Ribbon-Add-in auf Basis der aktiven xlwings Add-in Vorlage."""
+	if output_path is None:
+		output_path = PROJECT_ROOT / "dist" / "PLVS ULTRA Graphs Ribbon.xlam"
+	output_path = _unique_path(output_path.resolve())
+	output_path.parent.mkdir(parents=True, exist_ok=True)
+	app = xw.App(visible=False, add_book=True)
+	book = app.books.active
+	try:
+		for sheet in list(book.sheets)[1:]:
+			sheet.delete()
+		book.sheets[0].name = PRODUCT_NAME
+		_install_addin_vba(book)
+		_set_addin_xlwings_config(book)
+		book.api.SaveAs(str(output_path), FileFormat=XLAM_FILE_FORMAT)
+	finally:
+		book.close()
+		app.quit()
+	_add_ribbon_to_package(output_path)
+	return output_path
+
+
 def _initialize_workbook(book: xw.Book, sample: bool = False) -> None:
 	if sample:
 		data_sheet = book.sheets[0]
@@ -158,13 +280,17 @@ def main() -> int:
 	install_parser = subparsers.add_parser("install", help="Dashboard in eine sichere Workbook-Kopie installieren")
 	install_parser.add_argument("workbook", type=Path)
 	install_parser.add_argument("--output", type=Path)
+	addin_parser = subparsers.add_parser("create-addin", help="Eigenständiges PLVS Ribbon-Add-in erstellen")
+	addin_parser.add_argument("--output", type=Path)
 	args = parser.parse_args()
 	try:
 		if args.command == "create-template":
 			result = create_template(args.output)
+		elif args.command == "create-addin":
+			result = create_addin(args.output)
 		else:
 			result = install_in_copy(args.workbook, args.output)
-		print(f"{PRODUCT_NAME}-Arbeitsmappe erstellt: {result}")
+		print(f"{PRODUCT_NAME} erstellt: {result}")
 		return 0
 	except Exception as exc:
 		print(f"{PRODUCT_NAME}: {exc}", file=sys.stderr)

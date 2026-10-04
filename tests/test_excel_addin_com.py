@@ -4,16 +4,71 @@ import os
 import sys
 import tempfile
 import unittest
+from uuid import uuid4
 from pathlib import Path
 
 import xlwings as xw
 
 from excel_addin import PRODUCT_NAME
-from excel_bridge import _install_vba_bridge, _set_xlwings_config
+from excel_bridge import _install_vba_bridge, _set_xlwings_config, create_addin
 
 
 @unittest.skipUnless(os.name == "nt" and os.environ.get("PHYSIK_EXCEL_COM_TESTS") == "1", "Set PHYSIK_EXCEL_COM_TESTS=1 on Windows with Excel installed")
 class ExcelAddinCOMTests(unittest.TestCase):
+	def test_ribbon_addin_uses_active_workbook_for_analysis_and_chart(self) -> None:
+		with tempfile.TemporaryDirectory() as folder:
+			root = Path(folder)
+			addin_path = create_addin(root / f"PLVS Ribbon Test {uuid4().hex}.xlam")
+			app = xw.App(visible=False, add_book=True)
+			book = app.books.active
+			installed_addins = []
+			try:
+				app.api.DisplayAlerts = False
+				data = book.sheets[0]
+				data.name = "Messdaten"
+				data.range("A1").value = [
+					["Zeit [s]", "Strecke [m]"],
+					[0, 0],
+					[1, 2.1],
+					[2, 4.3],
+					[3, 6.2],
+				]
+				for path in (
+					Path(xw.__file__).resolve().parent / "addin" / "xlwings.xlam",
+					addin_path,
+				):
+					addin = app.api.AddIns.Add(str(path), False)
+					was_installed = bool(addin.Installed)
+					if not was_installed:
+						addin.Installed = True
+					installed_addins.append((addin, was_installed))
+				self.assertEqual(len(installed_addins), 2)
+				self.assertTrue(all(addin.Installed for addin, _ in installed_addins))
+				book.activate()
+
+				app.api.Run(f"'{addin_path}'!PLVS_ULTRA_Analyze")
+				dashboard = book.sheets[PRODUCT_NAME]
+				self.assertEqual(dashboard.range("B17").value, "Zeit [s]")
+				self.assertEqual(dashboard.range("B18").value, "Strecke [m]")
+				self.assertEqual(data.api.ChartObjects().Count, 0)
+
+				app.api.Run(f"'{addin_path}'!PLVS_ULTRA_CreateChart")
+				chart = data.api.ChartObjects(1).Chart
+				self.assertEqual(chart.ChartType, -4169)
+				self.assertEqual(tuple(chart.SeriesCollection(1).XValues), (0.0, 1.0, 2.0, 3.0))
+				self.assertEqual(tuple(chart.SeriesCollection(1).Values), (0.0, 2.1, 4.3, 6.2))
+			finally:
+				for addin, was_installed in reversed(installed_addins):
+					try:
+						addin.Installed = was_installed
+					except Exception:
+						pass
+				try:
+					book.close()
+				except Exception:
+					pass
+				app.quit()
+
 	def test_workbook_open_and_shape_macro_create_native_chart(self) -> None:
 		with tempfile.TemporaryDirectory() as folder:
 			workbook_path = Path(folder) / "messwerte.xlsm"

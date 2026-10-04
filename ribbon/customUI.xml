@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui" xmlns:xw="http://schemas.microsoft.com/office/2006/01/customui">
+  <ribbon>
+    <tabs>
+      <tab id="PLVSULTRAGraphsTab" label="PLVS ULTRA Graphs" insertAfterQ="xw:xlwingsTab">
+        <group id="PLVSDiagramGroup" label="Diagramm">
+          <button id="PLVSAnalyze" label="Analysieren" size="large" imageMso="ReviewTrackChanges" onAction="PLVS_RibbonAnalyze"/>
+          <button id="PLVSCreateChart" label="Diagramm erstellen" size="large" imageMso="ChartInsert" onAction="PLVS_RibbonCreateChart"/>
+        </group>
+        <group id="PLVSAIGroup" label="KI">
+          <button id="PLVSTestAI" label="KI testen" size="large" imageMso="CheckForIssues" onAction="PLVS_RibbonTestAI"/>
+          <button id="PLVSAISettings" label="KI-Einstellungen" size="large" imageMso="AdvancedFileProperties" onAction="PLVS_RibbonAISettings"/>
+        </group>
+        <group id="PLVSAnalysisGroup" label="Analyse">
+          <button id="PLVSShowAnalysis" label="Analyse anzeigen" size="large" imageMso="ViewReport" onAction="PLVS_RibbonShowAnalysis"/>
+          <button id="PLVSHelp" label="Hilfe" size="large" imageMso="Help" onAction="PLVS_RibbonHelp"/>
+        </group>
+      </tab>
+    </tabs>
+  </ribbon>
+</customUI>
