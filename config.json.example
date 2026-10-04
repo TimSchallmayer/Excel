@@ -1,5 +1,5 @@
 {
-  "endpoint": "http://localhost:11434/v1/chat/completions",
+  "endpoint": "https://your-openai-compatible-server/v1/chat/completions",
   "api_key": "",
-  "model": ""
+  "model": "your-model-name"
 }

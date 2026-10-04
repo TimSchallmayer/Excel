@@ -16,11 +16,24 @@ class AIConfig(TypedDict):
 DEFAULT_CONFIG: AIConfig = {"endpoint": "", "api_key": "", "model": ""}
 
 
-def load_config(path: Path = Path("config.json")) -> AIConfig:
+def load_config(path: Path | None = None) -> AIConfig:
+	if path is None:
+		path = Path(__file__).with_name("config.json")
 	if not path.exists():
-		return DEFAULT_CONFIG.copy()
-	with path.open(encoding="utf-8") as config_file:
-		values = json.load(config_file)
+		raise FileNotFoundError(
+			"Keine config.json gefunden. Kopiere config.json.example nach config.json und trage Endpoint und Modell ein."
+		)
+	try:
+		with path.open(encoding="utf-8") as config_file:
+			values = json.load(config_file)
+	except json.JSONDecodeError as exc:
+		raise ValueError("config.json enthält ungültiges JSON.") from exc
 	if not isinstance(values, dict):
 		raise ValueError("Die Konfiguration muss ein JSON-Objekt sein.")
-	return {key: str(values.get(key, DEFAULT_CONFIG[key])) for key in DEFAULT_CONFIG}
+	config: AIConfig = {}
+	for key, default in DEFAULT_CONFIG.items():
+		value = values.get(key, default)
+		if not isinstance(value, str):
+			raise ValueError(f"Der Konfigurationswert {key} muss Text sein.")
+		config[key] = value.strip()
+	return config

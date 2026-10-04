@@ -16,6 +16,8 @@ except ImportError as exc:
         "python -m pip install -r requirements.txt"
     ) from exc
 
+from ai import AIServiceError, analyze_with_ai, test_ai_connection
+from config import load_config
 from excel import get_numeric_columns, load_workbook
 from models import ChartSpecification
 from physics import choose_columns, identify_column, linear_fit
@@ -45,12 +47,18 @@ def create_plot(frame: pd.DataFrame, spec: ChartSpecification, output: Path,
 
     fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
     try:
+        if spec.chart_type == "scatter":
+            line_format = "o" if spec.show_points else "none"
+        elif spec.chart_type == "line":
+            line_format = "-o" if spec.show_points else "-"
+        else:
+            line_format = "-o" if spec.show_points else "-"
         ax.errorbar(
             x,
             y,
-            xerr=data["xerr"] if "xerr" in data else None,
-            yerr=data["yerr"] if "yerr" in data else None,
-            fmt="o",
+            xerr=data["xerr"] if spec.x_error_column and "xerr" in data else None,
+            yerr=data["yerr"] if spec.y_error_column and "yerr" in data else None,
+            fmt=line_format,
             capsize=3,
             color="#1769aa",
             ecolor="#777",
@@ -83,7 +91,7 @@ def create_plot(frame: pd.DataFrame, spec: ChartSpecification, output: Path,
             ax.plot(x_values, curve(x_values), color="#d1495b", label=fit_label)
             ax.legend()
 
-        use_zero = spec.origin == "yes" or (
+        use_zero = spec.origin is True or spec.origin == "yes" or (
             spec.origin == "auto"
             and spec.x_quantity != "Temperatur"
             and spec.y_quantity != "Temperatur"
@@ -115,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(errors="backslashreplace")
     parser = argparse.ArgumentParser(description="Erstellt ein Physikdiagramm aus Excel-Messwerten.")
-    parser.add_argument("datei", type=Path, help="Excel-Datei (.xlsx/.xlsm/.xls)")
+    parser.add_argument("datei", type=Path, nargs="?", help="Excel-Datei (.xlsx/.xlsm/.xls)")
     parser.add_argument("--sheet", default="0", help="Tabellenblattname oder nullbasierter Index (Standard: 0)")
     parser.add_argument("--x", help="Unabhängige Variable (Spaltenüberschrift)")
     parser.add_argument("--y", help="Abhängige Variable (Spaltenüberschrift)")
@@ -123,7 +131,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fit", choices=("auto", "none", "linear", "quadratic", "cubic"), default="auto")
     parser.add_argument("--zero", choices=("auto", "yes", "no"), default="auto", help="Nullpunkt der Achsen")
     parser.add_argument("--show", action="store_true", help="Diagramm nach dem Speichern anzeigen")
+    parser.add_argument("--ai", action="store_true", help="Bei mehrdeutiger Spaltenauswahl KI-Diagnose verwenden")
+    parser.add_argument("--test-ai", action="store_true", help="Verbindung zur konfigurierten KI testen")
     args = parser.parse_args(argv)
+    if args.test_ai:
+        try:
+            test_ai_connection(load_config())
+            print("KI-Verbindung erfolgreich.")
+            return 0
+        except (AIServiceError, FileNotFoundError, ValueError, OSError) as exc:
+            print(f"KI-Verbindung fehlgeschlagen: {exc}", file=sys.stderr)
+            return 2
+    if args.datei is None:
+        parser.error("Eine Excel-Datei ist erforderlich, außer bei --test-ai.")
     if not args.datei.is_file():
         parser.error(f"Datei nicht gefunden: {args.datei}")
     sheet = int(args.sheet) if args.sheet.isdigit() else args.sheet
@@ -144,7 +164,35 @@ def main(argv: list[str] | None = None) -> int:
                 description += " (mögliche Fehlerwerte)"
             print(f"  {column}: {description}")
 
-        x_column, y_column = choose_columns(frame, columns, args.x, args.y)
+        spec = None
+        ai_used = False
+        if args.ai and args.x is None and args.y is None:
+            measurement_columns = [column for column in columns if not identify_column(column)[2]]
+            if len(measurement_columns) == 2:
+                time_columns = [
+                    column for column in measurement_columns
+                    if identify_column(column)[0] == "Zeit"
+                ]
+                if len(time_columns) == 1:
+                    local_x = time_columns[0]
+                    local_y = next(column for column in measurement_columns if column != local_x)
+                    if identify_column(local_y)[0] is not None:
+                        x_column, y_column = local_x, local_y
+                    else:
+                        x_column = y_column = ""
+                else:
+                    x_column = y_column = ""
+            else:
+                x_column = y_column = ""
+            if not x_column or not y_column:
+                config = load_config()
+                spec = analyze_with_ai(frame, columns, config)
+                ai_used = True
+                print(f"KI-Diagnose (Konfidenz {spec.confidence:.0%}): {spec.reason}")
+        if spec is None:
+            x_column, y_column = choose_columns(frame, columns, args.x, args.y)
+        else:
+            x_column, y_column = spec.x_column, spec.y_column
         x_quantity, x_unit, _ = identify_column(x_column)
         y_quantity, y_unit, _ = identify_column(y_column)
         x_label = f"{x_quantity or x_column} [{x_unit}]" if x_unit else (x_quantity or x_column)
@@ -157,22 +205,27 @@ def main(argv: list[str] | None = None) -> int:
             str(column) for column in frame.columns
             if identify_column(column)[2] and identify_column(column)[0] == y_quantity
         ), None)
-        spec = ChartSpecification(
-            x_column=x_column,
-            y_column=y_column,
-            x_label=x_label,
-            y_label=y_label,
-            x_unit=x_unit,
-            y_unit=y_unit,
-            origin=args.zero,
-            x_error_column=x_error,
-            y_error_column=y_error,
-            x_quantity=x_quantity,
-            y_quantity=y_quantity,
-        )
+        if spec is None:
+            spec = ChartSpecification(
+                x_column=x_column,
+                y_column=y_column,
+                x_label=x_label,
+                y_label=y_label,
+                x_unit=x_unit,
+                y_unit=y_unit,
+                origin=args.zero,
+                x_error_column=x_error,
+                y_error_column=y_error,
+                x_quantity=x_quantity,
+                y_quantity=y_quantity,
+            )
+        elif args.zero != "auto":
+            spec.origin = args.zero
 
         fit = args.fit
-        if fit == "auto":
+        if ai_used and fit == "auto":
+            fit = spec.trendline
+        elif fit == "auto":
             x_values = pd.to_numeric(frame[x_column], errors="coerce").to_numpy(dtype=float)
             y_values = pd.to_numeric(frame[y_column], errors="coerce").to_numpy(dtype=float)
             valid = np.isfinite(x_values) & np.isfinite(y_values)
@@ -183,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
         output = args.output or args.datei.with_name(f"{args.datei.stem}_diagramm.png")
         create_plot(frame, spec, output, fit, args.show)
         return 0
-    except (ValueError, OSError, KeyError, ImportError) as exc:
+    except (AIServiceError, FileNotFoundError, ValueError, OSError, KeyError, ImportError) as exc:
         print(f"Fehler: {exc}", file=sys.stderr)
         return 2
 

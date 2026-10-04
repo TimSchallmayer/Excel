@@ -18,9 +18,14 @@ class ChartSpecification:
 	x_max: float | None = None
 	y_min: float | None = None
 	y_max: float | None = None
-	origin: str = "auto"
+	origin: bool | str | None = "auto"
 	trendline: str = "none"
 	x_error_column: str | None = None
 	y_error_column: str | None = None
 	x_quantity: str | None = None
 	y_quantity: str | None = None
+	independent_variable: str | None = None
+	dependent_variable: str | None = None
+	show_points: bool = True
+	confidence: float | None = None
+	reason: str = ""
