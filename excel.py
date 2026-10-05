@@ -133,17 +133,10 @@ def create_excel_chart(
 		if np.unique(x_data).size <= degree:
 			raise ValueError(f"Ein Fit vom Grad {degree} benötigt mindestens {degree + 1} unterschiedliche x-Werte.")
 
-	data_title = "_PhysikDiagrammDaten"
-	suffix = 2
-	while data_title in workbook.sheetnames:
-		data_title = f"_PhysikDiagrammDaten_{suffix}"
-		suffix += 1
-	chart_data = workbook.create_sheet(data_title)
-	chart_data.sheet_state = "hidden"
-	chart_data.append([spec.x_column, spec.y_column])
-	for x_value, y_value in zip(x_data, y_data):
-		chart_data.append([float(x_value), float(y_value)])
-	data_last_row = chart_data.max_row
+	x_column_index = list(frame.columns).index(spec.x_column) + 1
+	y_column_index = list(frame.columns).index(spec.y_column) + 1
+	x_reference = Reference(data_sheet, min_col=x_column_index, min_row=2, max_row=data_sheet.max_row)
+	y_reference = Reference(data_sheet, min_col=y_column_index, min_row=2, max_row=data_sheet.max_row)
 	chart = ScatterChart()
 	if spec.chart_type == "scatter":
 		chart.scatterStyle = "marker" if spec.show_points else "line"
@@ -159,8 +152,6 @@ def create_excel_chart(
 	chart.display_blanks = "gap"
 	chart.visible_cells_only = False
 
-	x_reference = Reference(chart_data, min_col=1, min_row=2, max_row=data_last_row)
-	y_reference = Reference(chart_data, min_col=2, min_row=1, max_row=data_last_row)
 	series = Series(y_reference, x_reference, title="Messwerte")
 	series.marker.symbol = "circle"
 	series.marker.size = 7
@@ -176,7 +167,6 @@ def create_excel_chart(
 		)
 	chart.series.append(series)
 
-	last_row = data_last_row
 	error_bar_columns: list[tuple[int, Literal["x", "y"]]] = []
 	for error_column, direction in (
 		(spec.x_error_column, "x"),
@@ -186,25 +176,18 @@ def create_excel_chart(
 			continue
 		if error_column not in frame.columns:
 			raise ValueError(f"Fehlerwert-Spalte {error_column!r} existiert nicht.")
+		error_column_index = list(frame.columns).index(error_column) + 1
 		error_values = pd.to_numeric(frame[error_column], errors="coerce").to_numpy(dtype=float)[valid]
 		if not np.any(np.isfinite(error_values) & (error_values >= 0)):
 			continue
-		column_index = chart_data.max_column + 1
-		chart_data.cell(row=1, column=column_index, value=error_column)
-		for row_index, error_value in enumerate(error_values, start=2):
-			chart_data.cell(
-				row=row_index,
-				column=column_index,
-				value=float(error_value) if math.isfinite(error_value) and error_value >= 0 else 0.0,
-			)
-		error_bar_columns.append((column_index, direction))
+		error_bar_columns.append((error_column_index, direction))
 	if error_bar_columns:
 		preferred_direction = "y" if any(direction == "y" for _, direction in error_bar_columns) else "x"
 		selected_error_bars = next(
 			(error for error in error_bar_columns if error[1] == preferred_direction),
 			error_bar_columns[0],
 		)
-		_append_error_bars(series, chart_data, selected_error_bars[0], 2, last_row, selected_error_bars[1])
+		_append_error_bars(series, data_sheet, selected_error_bars[0], 2, data_sheet.max_row, selected_error_bars[1])
 
 	x_zero = _use_zero_origin(spec.origin, spec.x_quantity, x_data)
 	y_zero = _use_zero_origin(spec.origin, spec.y_quantity, y_data)

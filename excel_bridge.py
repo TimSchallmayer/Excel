@@ -12,7 +12,7 @@ from pathlib import Path
 
 import xlwings as xw
 
-from excel_addin import PRODUCT_NAME, ensure_dashboard
+from excel_addin import PRODUCT_NAME
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 BRIDGE_MODULE = PROJECT_ROOT / "excel_vba" / "PLVSBridge.bas"
@@ -22,7 +22,6 @@ XLWINGS_VBA = Path(xw.__file__).resolve().parent / "xlwings.bas"
 XLWINGS_CUSTOM_ADDIN_VBA = Path(xw.__file__).resolve().parent / "xlwings_custom_addin.bas"
 XLSM_FILE_FORMAT = 52
 XLAM_FILE_FORMAT = 55
-CUSTOM_UI_NS = "http://schemas.microsoft.com/office/2006/01/customui"
 PACKAGE_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 UI_RELATIONSHIP = "http://schemas.microsoft.com/office/2006/relationships/ui/extensibility"
@@ -84,26 +83,6 @@ def _install_vba_bridge(book: xw.Book) -> None:
 		if component.Name == "PLVSBridge":
 			components.Remove(component)
 	project.VBComponents.Import(str(BRIDGE_MODULE))
-	workbook_component = next(
-		project.VBComponents.Item(index)
-		for index in range(1, project.VBComponents.Count + 1)
-		if project.VBComponents.Item(index).Type == 100
-		)
-	workbook_module = workbook_component.CodeModule
-	source = workbook_module.Lines(1, workbook_module.CountOfLines) if workbook_module.CountOfLines else ""
-	open_event = "Private Sub Workbook_Open()"
-	startup_call = 'RunPython "import excel_addin; excel_addin.ensure_dashboard()"'
-	if startup_call not in source:
-		if open_event.casefold() in source.casefold():
-			lines = source.splitlines()
-			start_index = next(index for index, line in enumerate(lines) if line.strip().casefold() == open_event.casefold())
-			end_index = next(
-				(index for index in range(start_index + 1, len(lines)) if lines[index].strip().casefold() == "end sub"),
-				len(lines),
-			)
-			workbook_module.InsertLines(end_index + 1, f"    {startup_call}")
-		else:
-			workbook_module.AddFromString(f"\n{open_event}\n    {startup_call}\nEnd Sub\n")
 
 
 def _install_addin_vba(book: xw.Book) -> None:
@@ -153,25 +132,25 @@ def _add_ribbon_to_package(addin_path: Path) -> None:
 	while rel_id in existing_ids:
 		rel_id = f"rIdPLVSUI{index}"
 		index += 1
+	content_types_path = "[Content_Types].xml"
+	content_types_root = ET.fromstring(files[content_types_path][1])
+	has_xml_default = any(
+		item.tag == f"{{{CONTENT_TYPES_NS}}}Default"
+		and item.get("Extension", "").casefold() == "xml"
+		and item.get("ContentType") == "application/xml"
+		for item in content_types_root
+	)
+	if not has_xml_default:
+		raise ValueError("Das Add-in-Paket enthält keinen application/xml-Standardtyp.")
+
+	# Excel ignores the Ribbon part if it has a customUI-specific content-type override.
 	ET.SubElement(
 		relationships_root,
 		f"{{{PACKAGE_REL_NS}}}Relationship",
 		{"Id": rel_id, "Type": UI_RELATIONSHIP, "Target": "customUI/customUI.xml"},
 	)
 
-	content_types_root = ET.fromstring(files[content_types_path][1])
-	ET.SubElement(
-		content_types_root,
-		f"{{{CONTENT_TYPES_NS}}}Override",
-		{
-			"PartName": "/customUI/customUI.xml",
-			"ContentType": "application/vnd.ms-office.customUI+xml",
-		},
-	)
-
-	ET.register_namespace("", CUSTOM_UI_NS)
 	ET.register_namespace("r", PACKAGE_REL_NS)
-	ET.register_namespace("ct", CONTENT_TYPES_NS)
 	files["customUI/customUI.xml"] = (
 		zipfile.ZipInfo("customUI/customUI.xml"),
 		ribbon_xml,
@@ -179,10 +158,6 @@ def _add_ribbon_to_package(addin_path: Path) -> None:
 	files[relationships_path] = (
 		files[relationships_path][0],
 		ET.tostring(relationships_root, encoding="utf-8", xml_declaration=True),
-	)
-	files[content_types_path] = (
-		files[content_types_path][0],
-		ET.tostring(content_types_root, encoding="utf-8", xml_declaration=True),
 	)
 	with tempfile.NamedTemporaryFile(dir=addin_path.parent, suffix=".xlam", delete=False) as temporary:
 		temporary_path = Path(temporary.name)
@@ -198,12 +173,13 @@ def _add_ribbon_to_package(addin_path: Path) -> None:
 def create_addin(output_path: Path | None = None) -> Path:
 	"""Erzeugt das PLVS Ribbon-Add-in auf Basis der aktiven xlwings Add-in Vorlage."""
 	if output_path is None:
-		output_path = PROJECT_ROOT / "dist" / "PLVS ULTRA Graphs Ribbon.xlam"
-	output_path = _unique_path(output_path.resolve())
+		output_path = PROJECT_ROOT / "dist" / "PLVS ULTRA Graphs.xlam"
+	output_path = output_path.resolve()
 	output_path.parent.mkdir(parents=True, exist_ok=True)
 	app = xw.App(visible=False, add_book=True)
 	book = app.books.active
 	try:
+		app.api.DisplayAlerts = False
 		for sheet in list(book.sheets)[1:]:
 			sheet.delete()
 		book.sheets[0].name = PRODUCT_NAME
@@ -228,13 +204,11 @@ def _initialize_workbook(book: xw.Book, sample: bool = False) -> None:
 			sheet.delete()
 	_install_vba_bridge(book)
 	_set_xlwings_config(book)
-	ensure_dashboard(book)
-	book.sheets[PRODUCT_NAME].activate()
 	book.save()
 
 
 def create_template(output_path: Path = TEMPLATE_PATH) -> Path:
-	"""Erstellt eine makrofähige Beispielarbeitsmappe mit Dashboard und Messdaten."""
+	"""Erstellt eine makrofähige Beispielarbeitsmappe mit Messdaten."""
 	output_path = _unique_path(output_path.resolve())
 	output_path.parent.mkdir(parents=True, exist_ok=True)
 	app = xw.App(visible=False, add_book=True)
@@ -249,7 +223,7 @@ def create_template(output_path: Path = TEMPLATE_PATH) -> Path:
 
 
 def install_in_copy(source_path: Path, output_path: Path | None = None) -> Path:
-	"""Kopiert eine vorhandene .xlsx/.xlsm-Datei in eine makrofähige Assistentenkopie."""
+	"""Kopiert eine vorhandene .xlsx/.xlsm-Datei und installiert die VBA-Ribbon-Brücke."""
 	source_path = source_path.resolve()
 	if not source_path.is_file():
 		raise FileNotFoundError(f"Excel-Datei nicht gefunden: {source_path}")
@@ -277,7 +251,7 @@ def main() -> int:
 	subparsers = parser.add_subparsers(dest="command", required=True)
 	template_parser = subparsers.add_parser("create-template", help="Beispielarbeitsmappe erzeugen")
 	template_parser.add_argument("--output", type=Path, default=TEMPLATE_PATH)
-	install_parser = subparsers.add_parser("install", help="Dashboard in eine sichere Workbook-Kopie installieren")
+	install_parser = subparsers.add_parser("install", help="Ribbon-Brücke in eine sichere Workbook-Kopie installieren")
 	install_parser.add_argument("workbook", type=Path)
 	install_parser.add_argument("--output", type=Path)
 	addin_parser = subparsers.add_parser("create-addin", help="Eigenständiges PLVS Ribbon-Add-in erstellen")

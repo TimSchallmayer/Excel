@@ -1,10 +1,8 @@
-"""Excel-Arbeitsblatt-GUI: Shapes rufen VBA auf, VBA ruft diese xlwings-Aktionen."""
+"""PLVS ULTRA Graphs Ribbon-Aktionen über xlwings und Excel COM."""
 
 from __future__ import annotations
 
-from config import load_config, save_config
 import math
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -12,22 +10,19 @@ import pandas as pd
 import xlwings as xw
 
 from ai import AIServiceError, analyze_with_ai, test_ai_connection
-from config import load_config
+from config import load_config, save_config
 from excel import get_numeric_columns
 from models import ChartSpecification
 from physics import identify_column, infer_chart_candidates, linear_fit
 
 
 PRODUCT_NAME = "PLVS ULTRA Graphs"
-ASSISTANT_SHEET = PRODUCT_NAME
-ANALYSIS_SHEET = PRODUCT_NAME
-BUTTON_ACTIONS = (
-	("PLVS_ULTRA_Analyze", "ANALYSIEREN", 3, 42),
-	("PLVS_ULTRA_CreateChart", "DIAGRAMM ERSTELLEN", 5, 50),
-	("PLVS_ULTRA_AISettings", "KI-EINSTELLUNGEN", 8, 42),
-	("PLVS_ULTRA_ShowAnalysis", "ANALYSE", 10, 42),
-	("PLVS_ULTRA_Help", "HILFE", 12, 42),
-)
+SOURCE_SHEET_NAME = "_PLVS_ULTRA_SourceSheet"
+SOURCE_ADDRESS_NAME = "_PLVS_ULTRA_SourceAddress"
+SOURCE_LABEL_NAME = "_PLVS_ULTRA_SourceLabel"
+ANALYSIS_NAME = "_PLVS_ULTRA_Analysis"
+CHART_SHEET_NAME = "_PLVS_ULTRA_ChartSheet"
+SETTING_PREFIX = "_PLVS_ULTRA_Setting_"
 
 
 def _active_book() -> xw.Book:
@@ -56,12 +51,10 @@ def _safe_action(action) -> None:
 		action(book)
 	except Exception as exc:
 		message = str(exc) or "Unerwarteter Fehler in PLVS ULTRA Graphs."
-		if book is not None:
-			if ASSISTANT_SHEET in [sheet.name for sheet in book.sheets]:
-				book.sheets[ASSISTANT_SHEET].range("B12").value = message
-			_message(book, message, error=True)
-		else:
+		if book is None:
 			raise
+		_write_status(book, message)
+		_message(book, message, error=True)
 
 
 def _matrix(value: Any) -> list[list[Any]]:
@@ -78,10 +71,10 @@ def _matrix(value: Any) -> list[list[Any]]:
 	return rows
 
 
-def _frame_from_sheet(sheet: xw.Sheet) -> pd.DataFrame:
-	rows = _matrix(sheet.used_range.value)
+def _frame_from_values(value: Any) -> pd.DataFrame:
+	rows = _matrix(value)
 	if len(rows) < 2:
-		raise ValueError("Das aktive Tabellenblatt enthält keine Messwerttabelle mit mindestens einer Datenzeile.")
+		raise ValueError("Der ausgewählte Bereich enthält keine Messwerttabelle mit mindestens einer Datenzeile.")
 	width = max(len(row) for row in rows)
 	rows = [row + [None] * (width - len(row)) for row in rows]
 	headers: list[str] = []
@@ -95,214 +88,288 @@ def _frame_from_sheet(sheet: xw.Sheet) -> pd.DataFrame:
 	frame = pd.DataFrame(rows[1:], columns=headers)
 	frame = frame.dropna(how="all").reset_index(drop=True)
 	if frame.empty:
-		raise ValueError("Im aktiven Tabellenblatt wurden keine Messwerte gefunden.")
+		raise ValueError("Im ausgewählten Bereich wurden keine Messwerte gefunden.")
 	return frame
 
 
-def _ensure_dashboard_buttons(sheet: xw.Sheet) -> None:
-	shapes = sheet.api.Shapes
-	for action_name, caption, row, height in BUTTON_ACTIONS:
-		shape_name = f"PLVS_{action_name.removeprefix('PLVS_ULTRA_')}"
-		try:
-			shape = shapes.Item(shape_name)
-		except Exception:
-			left = float(sheet.range(f"G{row}").api.Left)
-			top = float(sheet.range(f"G{row}").api.Top)
-			width = 230
-			shape = shapes.AddShape(1, left, top, width, height)
-			shape.Name = shape_name
-		shape.TextFrame2.TextRange.Text = caption
-		shape.TextFrame2.TextRange.Font.Size = 12
-		shape.TextFrame2.TextRange.Font.Bold = True
-		shape.TextFrame2.TextRange.Font.Fill.ForeColor.RGB = 0xFFFFFF
-		shape.Fill.ForeColor.RGB = 0x1A323E if action_name == "PLVS_ULTRA_CreateChart" else 0x1E6A5F
-		shape.Line.Visible = 0
-		shape.OnAction = f"'{sheet.book.name}'!{action_name}"
+def _frame_from_range(data_range: xw.Range) -> pd.DataFrame:
+	return _frame_from_values(data_range.value)
 
 
-def ensure_dashboard(book: xw.Book | None = None) -> xw.Sheet:
-	"""Erstellt oder repariert das Dashboardblatt samt Shape-Buttons."""
-	if book is None:
-		book = _active_book()
-	sheet = _settings_sheet(book)
-	try:
-		data_sheet = _active_data_sheet(book)
-		frame = _frame_from_sheet(data_sheet)
-		columns = get_numeric_columns(frame)
-		if not sheet.range("B3").value:
-			sheet.range("B3").value = data_sheet.name
-		for cell, value in (("B4", "automatisch"), ("B5", "automatisch"), ("B6", "XY-Streudiagramm"), ("B7", "auto"), ("B8", "auto"), ("B9", "Aktuelle Arbeitsmappe"), ("B10", "Nein")):
-			if not sheet.range(cell).value:
-				sheet.range(cell).value = value
-		quantities = [identify_column(column)[0] for column in columns if not identify_column(column)[2]]
-		sheet.range("B11").value = ", ".join(dict.fromkeys(q for q in quantities if q)) or ", ".join(columns)
-		if not sheet.range("B12").value:
-			sheet.range("B12").value = "Bereit"
-	except ValueError as exc:
-		sheet.range("B12").value = str(exc)
-	_ensure_dashboard_buttons(sheet)
-	sheet.activate()
-	return sheet
+def _range_key(sheet: xw.Sheet, data_range: xw.Range) -> str:
+	return f"{sheet.name.casefold()}!{str(data_range.address).replace('$', '').casefold()}"
 
 
-def _active_data_sheet(book: xw.Book) -> xw.Sheet:
-	active = book.sheets.active
-	if active.name not in {ASSISTANT_SHEET, ANALYSIS_SHEET} and not active.name.startswith("_PhysikDiagrammDaten"):
-		return active
-	if ASSISTANT_SHEET in [sheet.name for sheet in book.sheets]:
-		selected_name = str(book.sheets[ASSISTANT_SHEET].range("B3").value or "").strip()
-		if selected_name in [sheet.name for sheet in book.sheets] and selected_name not in {ASSISTANT_SHEET, ANALYSIS_SHEET}:
-			return book.sheets[selected_name]
-	for sheet in book.sheets:
-		if sheet.name not in {ASSISTANT_SHEET, ANALYSIS_SHEET} and not sheet.name.startswith("_PhysikDiagrammDaten") and sheet.api.Visible == -1:
-			return sheet
-	raise ValueError("Kein sichtbares Datenblatt gefunden. Wechsle zu einem Tabellenblatt mit Messwerten.")
+def _name_item(book: xw.Book, name: str):
+	names = book.api.Names
+	for index in range(1, int(names.Count) + 1):
+		item = names.Item(index)
+		if str(item.Name).split("!")[-1].casefold() == name.casefold():
+			return item
+	return None
 
 
-def _settings_sheet(book: xw.Book, refresh_columns: list[str] | None = None) -> xw.Sheet:
-	if ASSISTANT_SHEET in [sheet.name for sheet in book.sheets]:
-		sheet = book.sheets[ASSISTANT_SHEET]
+def _set_name(book: xw.Book, name: str, refers_to: str) -> None:
+	item = _name_item(book, name)
+	if item is None:
+		book.api.Names.Add(Name=name, RefersTo=refers_to, Visible=False)
 	else:
-		initial_sheet_name = book.sheets.active.name
-		sheet = book.sheets.add(ASSISTANT_SHEET, before=book.sheets[0])
-		sheet.range("A1").value = PRODUCT_NAME
-		sheet.range("A2").value = "Excel-Dashboard für Messreihen"
-		sheet.range("A3:A12").value = [
-			["Aktuelles Arbeitsblatt"], ["Unabhängige Größe"], ["Abhängige Größe"], ["Diagrammtyp"],
-			["Ausgleich"], ["Ursprung bei 0"], ["Arbeitsmodus"], ["KI bei Unsicherheit"],
-			["Erkannte Messgrößen"], ["Status"],
-		]
-		sheet.range("D3:D6").value = [["KI-EINSTELLUNGEN"], ["API-Endpunkt"], ["Modell"], ["API-Key"]]
-		sheet.range("E6").value = "Nur config.json; nicht im Workbook"
-		sheet.range("A15").value = "ANALYSE"
-		sheet.range("A17:A24").value = [
-			["Unabhängige Größe"], ["Abhängige Größe"], ["Diagrammtyp"], ["Nullpunkt"],
-			["Ausgleich"], ["Fehlerbalken"], ["Confidence"], ["Begründung"],
-		]
-		sheet.range("A1:G1").merge()
-		sheet.range("A2:G2").merge()
-		sheet.range("A1").api.Font.Bold = True
-		sheet.range("A1").api.Font.Size = 20
-		sheet.range("A2").api.Font.Size = 11
-		sheet.range("A3:A12").api.Font.Bold = True
-		sheet.range("D3:D6").api.Font.Bold = True
-		sheet.range("A15:B15").merge()
-		sheet.range("A15").api.Font.Bold = True
-		sheet.range("A15").api.Font.Size = 14
-		sheet.range("A17:A24").api.Font.Bold = True
-		sheet.range("A1:G1").api.Interior.Color = 26 + 50 * 256 + 62 * 65536
-		sheet.range("A1").api.Font.Color = 255 * 65536 + 255 * 256 + 255
-		sheet.range("A3:A12").api.Interior.Color = 235 + 239 * 256 + 239 * 65536
-		sheet.range("B3:B12").api.Interior.Color = 255 + 248 * 256 + 224 * 65536
-		sheet.range("D3:E3").api.Interior.Color = 30 + 105 * 256 + 95 * 65536
-		sheet.range("D3:E3").api.Font.Color = 255 * 65536 + 255 * 256 + 255
-		sheet.range("D4:D6").api.Interior.Color = 235 + 239 * 256 + 239 * 65536
-		sheet.range("A:A").api.ColumnWidth = 27
-		sheet.range("B:B").api.ColumnWidth = 34
-		sheet.range("C:C").api.ColumnWidth = 3
-		sheet.range("D:D").api.ColumnWidth = 18
-		sheet.range("E:E").api.ColumnWidth = 43
-		sheet.range("F:F").api.ColumnWidth = 3
-		sheet.range("G:G").api.ColumnWidth = 32
-		sheet.range("B4:B10").value = [
-			["automatisch"], ["automatisch"], ["XY-Streudiagramm"], ["auto"],
-			["auto"], ["Aktuelle Arbeitsmappe"], ["Nein"],
-		]
-		sheet.range("B3").value = initial_sheet_name
-		sheet.range("A26").value = "Messwerttabelle: Überschriften in der ersten Tabellenzeile, danach numerische Messwerte."
-		sheet.range("A26:G26").merge()
-		try:
-			config = load_config()
-		except (FileNotFoundError, ValueError):
-			config = {"endpoint": "", "model": "", "api_key": ""}
-		sheet.range("E4").value = config["endpoint"]
-		sheet.range("E5").value = config["model"]
-		sheet.range("E6").value = "Vorhanden" if config["api_key"] else "Nur lokal in config.json"
-	_ensure_dashboard_buttons(sheet)
-	if sheet.range("A1").value != PRODUCT_NAME:
-		sheet.range("A1").value = PRODUCT_NAME
-	if not sheet.range("A2").value:
-			sheet.range("A2").value = "Excel-Dashboard für Messreihen"
-	if refresh_columns is not None:
-		sheet.range("J:J").api.EntireColumn.Hidden = True
-		options = ["automatisch", *refresh_columns]
-		sheet.range("J1").value = [[item] for item in options]
-		last = len(options)
-		for cell in ("B4", "B5"):
-			validation = sheet.range(cell).api.Validation
-			try:
-				validation.Delete()
-			except Exception:
-				pass
-			validation.Add(Type=3, AlertStyle=1, Operator=1, Formula1=f"=$J$1:$J${last}")
-		for cell, values in (
-			("B6", "XY-Streudiagramm,XY mit Verbindungslinie"),
-			("B7", "auto,none,linear,quadratic,cubic"),
-			("B8", "auto,ja,nein"),
-			("B9", "Aktuelle Arbeitsmappe"),
-			("B10", "Nein,Ja"),
-		):
-			validation = sheet.range(cell).api.Validation
-			try:
-				validation.Delete()
-			except Exception:
-				pass
-			validation.Add(Type=3, AlertStyle=1, Operator=1, Formula1=f'"{values}"')
-	return sheet
+		item.RefersTo = refers_to
+		item.Visible = False
 
 
-def open_settings() -> None:
+def _set_text_name(book: xw.Book, name: str, value: str) -> None:
+	escaped = value.replace('"', '""')
+	_set_name(book, name, f'="{escaped}"')
+
+
+def _get_text_name(book: xw.Book, name: str, default: str = "") -> str:
+	item = _name_item(book, name)
+	if item is None:
+		return default
+	value = book.app.api.Evaluate(item.RefersTo)
+	return str(value) if value is not None else default
+
+
+def _source_from_range(
+	sheet: xw.Sheet,
+	data_range: xw.Range,
+	label: str,
+) -> tuple[xw.Sheet, xw.Range, str] | None:
+	try:
+		frame = _frame_from_range(data_range)
+	except ValueError:
+		return None
+	if len(get_numeric_columns(frame)) < 2:
+		return None
+	return sheet, data_range, label
+
+
+def _overlaps(first: xw.Range, second: xw.Range) -> bool:
+	first_top, first_left = int(first.api.Row), int(first.api.Column)
+	second_top, second_left = int(second.api.Row), int(second.api.Column)
+	first_bottom = first_top + int(first.api.Rows.Count) - 1
+	second_bottom = second_top + int(second.api.Rows.Count) - 1
+	first_right = first_left + int(first.api.Columns.Count) - 1
+	second_right = second_left + int(second.api.Columns.Count) - 1
+	return not (
+		first_bottom < second_top
+		or second_bottom < first_top
+		or first_right < second_left
+		or second_right < first_left
+	)
+
+
+def _connected_regions(value: Any) -> list[tuple[int, int, int, int]]:
+	rows = _matrix(value)
+	if not rows:
+		return []
+	width = max(map(len, rows))
+	rows = [row + [None] * (width - len(row)) for row in rows]
+	visited: set[tuple[int, int]] = set()
+	regions: list[tuple[int, int, int, int]] = []
+	for row_index, row in enumerate(rows):
+		for column_index, cell in enumerate(row):
+			if cell is None or cell == "" or (row_index, column_index) in visited:
+				continue
+			pending = [(row_index, column_index)]
+			visited.add((row_index, column_index))
+			region_rows: list[int] = []
+			region_columns: list[int] = []
+			while pending:
+				current_row, current_column = pending.pop()
+				region_rows.append(current_row)
+				region_columns.append(current_column)
+				for next_row, next_column in (
+					(current_row - 1, current_column),
+					(current_row + 1, current_column),
+					(current_row, current_column - 1),
+					(current_row, current_column + 1),
+				):
+					if (
+						0 <= next_row < len(rows)
+						and 0 <= next_column < width
+						and rows[next_row][next_column] is not None
+						and rows[next_row][next_column] != ""
+						and (next_row, next_column) not in visited
+					):
+						visited.add((next_row, next_column))
+						pending.append((next_row, next_column))
+			regions.append((min(region_rows), min(region_columns), max(region_rows), max(region_columns)))
+	return regions
+
+
+def _discover_data_sources(book: xw.Book) -> list[tuple[xw.Sheet, xw.Range, str]]:
+	sources: list[tuple[xw.Sheet, xw.Range, str]] = []
+	seen: set[str] = set()
+	for sheet in book.sheets:
+		if int(sheet.api.Visible) != -1:
+			continue
+		ranges: list[xw.Range] = []
+		tables = sheet.api.ListObjects
+		for index in range(1, int(tables.Count) + 1):
+			table = tables.Item(index)
+			data_range = sheet.range(table.Range.Address)
+			ranges.append(data_range)
+			source = _source_from_range(
+				sheet,
+				data_range,
+				f"Tabelle „{table.Name}“ — {sheet.name}!{data_range.address}",
+			)
+			if source is not None:
+				key = _range_key(sheet, data_range)
+				if key not in seen:
+					sources.append(source)
+					seen.add(key)
+		used = sheet.used_range
+		values = used.value
+		for top, left, bottom, right in _connected_regions(values):
+			data_range = sheet.range(
+				(int(used.api.Row) + top, int(used.api.Column) + left),
+				(int(used.api.Row) + bottom, int(used.api.Column) + right),
+			)
+			if any(_overlaps(data_range, table_range) for table_range in ranges):
+				continue
+			key = _range_key(sheet, data_range)
+			if key in seen:
+				continue
+			label = f"Datenbereich — {sheet.name}!{data_range.address}"
+			source = _source_from_range(sheet, data_range, label)
+			if source is not None:
+				sources.append(source)
+				seen.add(key)
+
+	current = _current_data_range(book)
+	if current is not None:
+		sheet, data_range = current
+		key = _range_key(sheet, data_range)
+		if key in seen:
+			for index, (source_sheet, source_range, label) in enumerate(sources):
+				if _range_key(source_sheet, source_range) == key:
+					sources[index] = (
+						source_sheet,
+						source_range,
+						f"Aktueller Datenbereich — {label}",
+					)
+					break
+		else:
+			source = _source_from_range(
+				sheet,
+				data_range,
+				f"Aktueller Datenbereich — {sheet.name}!{data_range.address}",
+			)
+			if source is not None:
+				sources.append(source)
+	return sources
+
+
+def _current_data_range(book: xw.Book) -> tuple[xw.Sheet, xw.Range] | None:
+	sheet = book.sheets.active
+	data_range = sheet.range(sheet.api.Application.ActiveCell.CurrentRegion.Address)
+	if _source_from_range(sheet, data_range, "") is None:
+		return None
+	return sheet, data_range
+
+
+def _store_source(book: xw.Book, sheet: xw.Sheet, data_range: xw.Range, label: str) -> None:
+	_set_text_name(book, SOURCE_SHEET_NAME, sheet.name)
+	_set_text_name(book, SOURCE_ADDRESS_NAME, data_range.address)
+	_set_text_name(book, SOURCE_LABEL_NAME, label)
+	_set_text_name(book, ANALYSIS_NAME, f"Datenquelle: {label} — Diagramm erstellen.")
+
+
+def _selected_source(book: xw.Book) -> tuple[xw.Sheet, xw.Range] | None:
+	sheet_name = _get_text_name(book, SOURCE_SHEET_NAME)
+	address = _get_text_name(book, SOURCE_ADDRESS_NAME)
+	if not sheet_name and not address:
+		return None
+	if not sheet_name or not address:
+		raise ValueError("Die gespeicherte Datenquelle ist unvollständig. Bitte erneut auswählen.")
+	if sheet_name not in book.sheet_names:
+		raise ValueError("Das Tabellenblatt der gespeicherten Datenquelle ist nicht mehr verfügbar. Bitte erneut auswählen.")
+	sheet = book.sheets[sheet_name]
+	return sheet, sheet.range(address)
+
+
+def _manual_source(book: xw.Book) -> tuple[xw.Sheet, xw.Range, str]:
+	selected = book.app.api.InputBox(
+		Prompt="Markiere den zusammenhängenden Zellbereich einschließlich Überschriften.",
+		Title=f"{PRODUCT_NAME} – Datenquelle",
+		Type=8,
+	)
+	if selected is False or selected is None:
+		raise ValueError("Die Bereichsauswahl wurde abgebrochen.")
+	if int(selected.Areas.Count) != 1:
+		raise ValueError("Bitte einen zusammenhängenden Zellbereich auswählen.")
+	if str(selected.Worksheet.Parent.FullName).casefold() != str(book.fullname).casefold():
+		raise ValueError("Bitte einen Zellbereich aus der gerade verwendeten Arbeitsmappe auswählen.")
+	sheet = book.sheets[str(selected.Worksheet.Name)]
+	data_range = sheet.range(selected.Address)
+	label = f"Manuelle Auswahl — {sheet.name}!{data_range.address}"
+	source = _source_from_range(sheet, data_range, label)
+	if source is None:
+		raise ValueError("Der ausgewählte Bereich benötigt Überschriften und mindestens zwei numerische Messspalten.")
+	return source
+
+
+def _choose_data_source(book: xw.Book) -> tuple[xw.Sheet, xw.Range]:
+	sources = _discover_data_sources(book)
+	if len(sources) == 1:
+		sheet, data_range, label = sources[0]
+		_store_source(book, sheet, data_range, label)
+		return sheet, data_range
+	options = [label for _, _, label in sources]
+	options.append("Manuell auswählen …")
+	if not sources:
+		return _select_manual_source(book)
+	prompt = (
+		"Welche Datenquelle soll analysiert werden?\n\n"
+		+ "\n".join(f"{index}. {label}" for index, label in enumerate(options, 1))
+		+ "\n\nNummer eingeben:"
+	)
+	response = book.app.api.InputBox(
+		Prompt=prompt,
+		Title=f"{PRODUCT_NAME} – Datenquelle",
+		Default="",
+		Type=2,
+	)
+	if response is False or response is None:
+		raise ValueError("Die Datenquellenauswahl wurde abgebrochen.")
+	if not str(response).strip():
+		raise ValueError("Die Datenquellenauswahl wurde abgebrochen.")
+	try:
+		selection = int(str(response).strip())
+	except ValueError as exc:
+		raise ValueError("Bitte die Nummer einer Datenquelle eingeben.") from exc
+	if not 1 <= selection <= len(options):
+		raise ValueError("Die ausgewählte Datenquellennummer ist ungültig.")
+	if selection == len(options):
+		return _select_manual_source(book)
+	sheet, data_range, label = sources[selection - 1]
+	_store_source(book, sheet, data_range, label)
+	return sheet, data_range
+
+
+def _select_manual_source(book: xw.Book) -> tuple[xw.Sheet, xw.Range]:
+	sheet, data_range, label = _manual_source(book)
+	_store_source(book, sheet, data_range, label)
+	return sheet, data_range
+
+
+def _source_for_chart(book: xw.Book) -> tuple[xw.Sheet, xw.Range]:
+	source = _selected_source(book)
+	if source is not None:
+		return source
+	return _choose_data_source(book)
+
+
+def select_data_source() -> None:
 	def action(book: xw.Book) -> None:
-		data_sheet = _active_data_sheet(book)
-		frame = _frame_from_sheet(data_sheet)
-		columns = get_numeric_columns(frame)
-		if len(columns) < 2:
-			raise ValueError("Keine zwei numerischen Messspalten im aktiven Blatt gefunden.")
-		sheet = _settings_sheet(book, columns)
-		sheet.range("B3").value = data_sheet.name
-		sheet.range("I:I").api.EntireColumn.Hidden = True
-		data_sheets = [
-			item.name for item in book.sheets
-			if item.name not in {ASSISTANT_SHEET, ANALYSIS_SHEET}
-			and not item.name.startswith("_PhysikDiagrammDaten")
-			and item.api.Visible == -1
-		]
-		sheet.range("I1").value = [[name] for name in data_sheets]
-		validation = sheet.range("B3").api.Validation
-		try:
-			validation.Delete()
-		except Exception:
-			pass
-		validation.Add(Type=3, AlertStyle=1, Operator=1, Formula1=f"=$I$1:$I${len(data_sheets)}")
+		sheet, data_range = _choose_data_source(book)
 		sheet.activate()
-		sheet.range("B4").select()
-		book.app.api.StatusBar = f"{PRODUCT_NAME}: Messspalten, Fit, Ursprung und Ausgabeoptionen einstellen."
-	_safe_action(action)
-
-
-def open_ai_settings() -> None:
-	def action(book: xw.Book) -> None:
-		sheet = _settings_sheet(book)
-		sheet.activate()
-		sheet.range("E4").select()
-		config = _get_ai_config(book)
-		key_entry = book.app.api.InputBox(
-			"API-Key optional. Der Wert wird nur lokal in config.json gespeichert, nicht im Workbook.\nLeer lassen, um einen vorhandenen Schlüssel beizubehalten.",
-			PRODUCT_NAME,
-			"",
-			Type=2,
-		)
-		if key_entry is False:
-			return
-		config["endpoint"] = str(sheet.range("E4").value or "").strip()
-		config["model"] = str(sheet.range("E5").value or "").strip()
-		if str(key_entry).strip():
-			config["api_key"] = str(key_entry).strip()
-		path = save_config(config)
-		sheet.range("E6").value = "Vorhanden (lokal gespeichert)" if config["api_key"] else "Nicht gesetzt"
-		_write_status(book, "KI-Konfiguration lokal gespeichert.")
-		_message(book, f"Endpoint und Modell gespeichert. API-Key wird ausschließlich lokal gespeichert: {path}")
-		book.app.api.StatusBar = f"{PRODUCT_NAME}: KI-Konfiguration lokal gespeichert."
+		data_range.select()
+		label = _get_text_name(book, ANALYSIS_NAME)
+		_write_status(book, label or f"Datenquelle ausgewählt: {sheet.name}!{data_range.address}")
 	_safe_action(action)
 
 
@@ -321,10 +388,9 @@ def _prompt_choice(book: xw.Book, label: str, options: list[str], default: str |
 
 
 def _resolve_spec(book: xw.Book, frame: pd.DataFrame, columns: list[str], allow_ai: bool) -> tuple[ChartSpecification, list]:
-	settings = _settings_sheet(book)
 	candidates = infer_chart_candidates(frame, columns)
-	selected_x = str(settings.range("B4").value or "automatisch").strip()
-	selected_y = str(settings.range("B5").value or "automatisch").strip()
+	selected_x = _get_text_name(book, f"{SETTING_PREFIX}X", "automatisch").strip()
+	selected_y = _get_text_name(book, f"{SETTING_PREFIX}Y", "automatisch").strip()
 	best = candidates[0] if candidates else None
 	ai_spec: ChartSpecification | None = None
 	manual_confirmation_required = False
@@ -359,10 +425,9 @@ def _resolve_spec(book: xw.Book, frame: pd.DataFrame, columns: list[str], allow_
 		second_confidence = candidates[1].confidence if len(candidates) > 1 else 0.0
 		is_clear = bool(best and best.confidence >= 0.84 and best.confidence - second_confidence >= 0.12)
 		ambiguous = not is_clear
-		if ambiguous and allow_ai and str(settings.range("B10").value).strip().lower() in {"ja", "yes"}:
-			config = _get_ai_config(book)
-			config["endpoint"] = str(settings.range("E4").value or config["endpoint"]).strip()
-			config["model"] = str(settings.range("E5").value or config["model"]).strip()
+		use_ai = _get_text_name(book, f"{SETTING_PREFIX}UseAI", "Nein").strip().lower() in {"ja", "yes"}
+		if ambiguous and allow_ai and use_ai:
+			config = _get_ai_config()
 			ai_spec = analyze_with_ai(frame, columns, config)
 			if ai_spec.confidence is not None and ai_spec.confidence >= 0.9:
 				ai_spec.reason = f"KI: {ai_spec.reason}"
@@ -402,7 +467,7 @@ def _resolve_spec(book: xw.Book, frame: pd.DataFrame, columns: list[str], allow_
 	y_quantity, y_unit, _ = identify_column(y_column)
 	x_label = f"{x_quantity} [{x_unit}]" if x_quantity and x_unit else x_quantity or x_column
 	y_label = f"{y_quantity} [{y_unit}]" if y_quantity and y_unit else y_quantity or y_column
-	fit = str(settings.range("B7").value or "auto").strip().lower()
+	fit = _get_text_name(book, f"{SETTING_PREFIX}Fit", "auto").strip().lower()
 	if fit == "auto":
 		x_values = pd.to_numeric(frame[x_column], errors="coerce").to_numpy(dtype=float)
 		y_values = pd.to_numeric(frame[y_column], errors="coerce").to_numpy(dtype=float)
@@ -429,8 +494,11 @@ def _resolve_spec(book: xw.Book, frame: pd.DataFrame, columns: list[str], allow_
 		y_label=y_label,
 		x_unit=x_unit,
 		y_unit=y_unit,
-		chart_type="line_scatter" if str(settings.range("B6").value).startswith("XY mit") else "scatter",
-		origin={"ja": True, "nein": False, "auto": "auto"}.get(str(settings.range("B8").value or "auto").strip().lower(), "auto"),
+		chart_type="line_scatter" if _get_text_name(book, f"{SETTING_PREFIX}ChartType", "XY-Streudiagramm").startswith("XY mit") else "scatter",
+		origin={"ja": True, "nein": False, "auto": "auto"}.get(
+			_get_text_name(book, f"{SETTING_PREFIX}Origin", "auto").strip().lower(),
+			"auto",
+		),
 		trendline=fit,
 		x_error_column=error_for.get(x_quantity),
 		y_error_column=error_for.get(y_quantity),
@@ -438,164 +506,125 @@ def _resolve_spec(book: xw.Book, frame: pd.DataFrame, columns: list[str], allow_
 		y_quantity=y_quantity,
 		independent_variable=x_quantity,
 		dependent_variable=y_quantity,
-		confidence=selected_candidate.confidence if selected_candidate else 1.0,
+		confidence=selected_candidate.confidence if selected_candidate else None,
 		reason=(f"KI mit Confidence {ai_spec.confidence:.0%} verworfen; Auswahl durch Benutzer." if ai_spec is not None else selected_candidate.reason if selected_candidate else "Benutzer hat x- und y-Spalte ausgewählt."),
 	)
 	return spec, candidates
 
 
-def _analysis_rows(spec: ChartSpecification, candidates: list) -> list[list[Any]]:
-	confidence = spec.confidence or 0.0
-	confidence_label = "Entscheidung" if confidence >= 0.9 else "Mit Vorbehalt" if confidence >= 0.7 else "Manuell bestätigt"
-	return [
-		["Unabhängige Größe", spec.x_label],
-		["Abhängige Größe", spec.y_label],
-		["Diagrammtyp", "XY mit Verbindungslinie" if spec.connect_points else "XY-Streudiagramm"],
-		["Ursprung", "Ja" if spec.origin is True or spec.origin == "ja" else "Nein" if spec.origin is False or spec.origin == "nein" else "Automatisch"],
-		["Ausgleich", spec.trendline],
-		["Fehlerbalken", ", ".join(name for name in (spec.x_error_column, spec.y_error_column) if name) or "Keine erkannt"],
-		["KI", "Verwendet" if spec.reason.startswith("KI:") else "Lokale Regeln / Auswahl"],
-		["Confidence", f"{confidence:.0%} ({confidence_label})"],
-		["Begründung", spec.reason],
-		["Mögliche Beziehungen", "; ".join(f"{item.relationship}: {item.x_column} → {item.y_column} ({item.confidence:.0%})" for item in candidates[:5])],
+def _number(value: float) -> str:
+	return f"{value:.4g}"
+
+
+def _analysis_label(
+	frame: pd.DataFrame,
+	spec: ChartSpecification,
+) -> str:
+	x_values = pd.to_numeric(frame[spec.x_column], errors="coerce").to_numpy(dtype=float)
+	y_values = pd.to_numeric(frame[spec.y_column], errors="coerce").to_numpy(dtype=float)
+	valid = np.isfinite(x_values) & np.isfinite(y_values)
+	x_data, y_data = x_values[valid], y_values[valid]
+	parts = [
+		f"Unabhängig: {spec.x_label}; Abhängig: {spec.y_label}",
+		(
+			f"Diagramm: {'XY mit Linie' if spec.connect_points or spec.chart_type == 'line_scatter' else 'XY'}; "
+			f"Fit: {'kein' if spec.trendline == 'none' else spec.trendline.capitalize()}"
+		),
+		(
+			f"Messpunkte: {len(y_data)}; "
+			f"Mittelwert: {_number(float(np.mean(y_data)))} {spec.y_unit}".rstrip()
+		),
 	]
+	if spec.confidence is not None:
+		parts[-1] += f"; Confidence: {spec.confidence:.2f}"
+	return " | ".join(parts)
 
 
-def _write_analysis(book: xw.Book, spec: ChartSpecification, candidates: list) -> xw.Sheet:
-	sheet = _settings_sheet(book)
-	for row_index, row in enumerate(_analysis_rows(spec, candidates), start=17):
-		sheet.range(f"A{row_index}").value = row[0]
-		sheet.range(f"B{row_index}").value = row[1]
-	sheet.range("B17:B25").api.WrapText = True
-	sheet.range("A17:A25").api.Font.Bold = True
-	sheet.activate()
-	return sheet
+def _write_analysis(
+	book: xw.Book,
+	frame: pd.DataFrame,
+	spec: ChartSpecification,
+) -> None:
+	_set_text_name(book, ANALYSIS_NAME, _analysis_label(frame, spec))
 
 
 def show_help() -> None:
 	def action(book: xw.Book) -> None:
 		help_text = (
 			f"{PRODUCT_NAME}\n\n"
-			"- Analysiert Messwerttabellen im aktiven Excel-Blatt.\n"
+			"- Analysiert die ausgewählte Excel-Tabelle oder den Zellbereich.\n"
 			"- Erkennt physikalische Größen, Einheiten und potenzielle Beziehungen.\n"
 			"- Erstellt ein natives Excel-Diagramm im geöffneten Workbook.\n"
+			"- Zeigt die aktuelle Analyse direkt im Ribbon an.\n"
 			"- Die KI wird nur bei mehrdeutigen Fällen verwendet.\n"
-			"- Wenn die Confidence niedrig ist, bleibt die Auswahl nachvollziehbar und manuell prüfbar."
+			"- Es werden keine Analyse- oder Hilfsblätter angelegt."
 		)
 		_message(book, help_text)
 		_write_status(book, "Hilfe angezeigt.")
 	_safe_action(action)
 
 
-def _get_ai_config(book: xw.Book) -> dict[str, str]:
+def _get_ai_config() -> dict[str, str]:
 	try:
 		config = load_config()
-	except (FileNotFoundError, ValueError):
+	except FileNotFoundError:
 		config = {"endpoint": "", "api_key": "", "model": ""}
-	if ASSISTANT_SHEET in [sheet.name for sheet in book.sheets]:
-		settings = book.sheets[ASSISTANT_SHEET]
-		config["endpoint"] = str(settings.range("E4").value or config["endpoint"]).strip()
-		config["model"] = str(settings.range("E5").value or config["model"]).strip()
 	return config
 
 
 def _write_status(book: xw.Book, message: str) -> None:
-	if ASSISTANT_SHEET in [sheet.name for sheet in book.sheets]:
-		book.sheets[ASSISTANT_SHEET].range("B12").value = message
 	book.app.api.StatusBar = message
 
 
-def analyze_table() -> None:
+def open_ai_settings() -> None:
 	def action(book: xw.Book) -> None:
-		data_sheet = _active_data_sheet(book)
-		frame = _frame_from_sheet(data_sheet)
-		columns = get_numeric_columns(frame)
-		if len(columns) < 2:
-			raise ValueError("Keine geeigneten Messwertspalten gefunden. Benötigt werden mindestens zwei numerische Spalten.")
-		settings = _settings_sheet(book, columns)
-		settings.range("B3").value = data_sheet.name
-		spec, candidates = _resolve_spec(book, frame, columns, allow_ai=True)
-		_write_analysis(book, spec, candidates)
-		_write_status(book, "Analyse abgeschlossen.")
-		_message(book, f"Unabhängig: {spec.x_label}\nAbhängig: {spec.y_label}\nBeziehung: {spec.reason}")
+		config = _get_ai_config()
+		endpoint = book.app.api.InputBox(
+			Prompt="OpenAI-kompatibler API-Endpunkt:",
+			Title=f"{PRODUCT_NAME} – KI-Einstellungen",
+			Default=config["endpoint"],
+			Type=2,
+		)
+		if endpoint is False:
+			return
+		model = book.app.api.InputBox(
+			Prompt="Modellname:",
+			Title=f"{PRODUCT_NAME} – KI-Einstellungen",
+			Default=config["model"],
+			Type=2,
+		)
+		if model is False:
+			return
+		api_key = book.app.api.InputBox(
+			Prompt="API-Key (optional; Eingabe wird lokal in config.json gespeichert):",
+			Title=f"{PRODUCT_NAME} – KI-Einstellungen",
+			Default="",
+			Type=2,
+		)
+		if api_key is False:
+			return
+		config["endpoint"] = str(endpoint).strip()
+		config["model"] = str(model).strip()
+		if str(api_key).strip():
+			config["api_key"] = str(api_key).strip()
+		use_ai_default = "Ja" if config["endpoint"] and config["model"] else "Nein"
+		use_ai = book.app.api.InputBox(
+			Prompt="KI bei mehrdeutigen Daten für die Analyse verwenden? Ja oder Nein:",
+			Title=f"{PRODUCT_NAME} – KI-Einstellungen",
+			Default=use_ai_default,
+			Type=2,
+		)
+		if use_ai is False:
+			return
+		if str(use_ai).strip().lower() not in {"ja", "nein", "yes", "no"}:
+			raise ValueError("Bitte für die KI-Nutzung „Ja“ oder „Nein“ eingeben.")
+		if str(use_ai).strip().lower() in {"ja", "yes"} and not (config["endpoint"] and config["model"]):
+			raise AIServiceError("Für die KI-Nutzung müssen Endpoint und Modell gesetzt sein.")
+		path = save_config(config)
+		_set_text_name(book, f"{SETTING_PREFIX}UseAI", "Ja" if str(use_ai).strip().lower() in {"ja", "yes"} else "Nein")
+		_write_status(book, "KI-Einstellungen lokal gespeichert.")
+		_message(book, f"KI-Einstellungen gespeichert. Zugangsdaten liegen ausschließlich lokal: {path}")
 	_safe_action(action)
-
-
-def show_analysis() -> None:
-	def action(book: xw.Book) -> None:
-		data_sheet = _active_data_sheet(book)
-		frame = _frame_from_sheet(data_sheet)
-		columns = get_numeric_columns(frame)
-		if len(columns) < 2:
-			raise ValueError("Keine geeigneten Messwertspalten gefunden.")
-		spec, candidates = _resolve_spec(book, frame, columns, allow_ai=False)
-		_write_analysis(book, spec, candidates)
-		_write_status(book, "Analyse auf dem PLVS ULTRA Graphs-Dashboard aktualisiert.")
-	_safe_action(action)
-
-
-def _excel_column(index: int) -> str:
-	letters = ""
-	while index:
-		index, remainder = divmod(index - 1, 26)
-		letters = chr(65 + remainder) + letters
-	return letters
-
-
-def _chart_data(
-	book: xw.Book,
-	frame: pd.DataFrame,
-	spec: ChartSpecification,
-) -> tuple[xw.Sheet, int, list[tuple[str, int, int, int]]]:
-	x_values = pd.to_numeric(frame[spec.x_column], errors="coerce").to_numpy(dtype=float)
-	y_values = pd.to_numeric(frame[spec.y_column], errors="coerce").to_numpy(dtype=float)
-	valid = np.isfinite(x_values) & np.isfinite(y_values)
-	if int(valid.sum()) < 2 or np.unique(x_values[valid]).size < 2:
-		raise ValueError("Mindestens zwei gültige Messwertpaare mit verschiedenen x-Werten sind erforderlich.")
-	chart_frame = pd.DataFrame({spec.x_column: x_values[valid], spec.y_column: y_values[valid]})
-	error_series: list[tuple[str, int, int, int]] = []
-	for error_column in (spec.x_error_column, spec.y_error_column):
-		if error_column and error_column not in frame.columns:
-			raise ValueError(f"Fehlerwert-Spalte {error_column!r} existiert nicht.")
-	name = "_PhysikDiagrammDaten"
-	index = 2
-	while name in [sheet.name for sheet in book.sheets]:
-		name = f"_PhysikDiagrammDaten_{index}"
-		index += 1
-	helper = book.sheets.add(name, before=book.sheets[0])
-	chart_rows: list[list[Any]] = [chart_frame.columns.tolist(), *chart_frame.values.tolist()]
-	for direction, error_column in (("y", spec.y_error_column), ("x", spec.x_error_column)):
-		if not error_column:
-			continue
-		errors = pd.to_numeric(frame[error_column], errors="coerce").to_numpy(dtype=float)[valid]
-		if not np.any(np.isfinite(errors) & (errors >= 0)):
-			continue
-		x_column = len(chart_rows[0]) + 1
-		y_column = x_column + 1
-		chart_rows[0].extend([f"{direction}-Fehlerbalken x", f"{direction}-Fehlerbalken y"])
-		for index, (x_value, y_value, error) in enumerate(zip(x_values[valid], y_values[valid], errors), start=1):
-			chart_rows[index].extend([None, None])
-			if not np.isfinite(error) or error < 0:
-				continue
-			if direction == "y":
-				chart_rows.extend([
-					[None] * (x_column - 1) + [float(x_value), float(y_value - error)],
-					[None] * (x_column - 1) + [float(x_value), float(y_value + error)],
-					[None] * (x_column - 1) + [None, None],
-				])
-			else:
-				chart_rows.extend([
-					[None] * (x_column - 1) + [float(x_value - error), float(y_value)],
-					[None] * (x_column - 1) + [float(x_value + error), float(y_value)],
-					[None] * (x_column - 1) + [None, None],
-				])
-		last_error_row = len(chart_rows)
-		error_series.append((direction, x_column, y_column, last_error_row))
-	width = len(chart_rows[0])
-	chart_rows = [row + [None] * (width - len(row)) for row in chart_rows]
-	helper.range("A1").value = chart_rows
-	helper.api.Visible = 2
-	return helper, len(chart_frame) + 1, error_series
 
 
 def _axis_bounds(values: np.ndarray, low: float | None, high: float | None, zero: bool) -> tuple[float, float]:
@@ -610,12 +639,39 @@ def _axis_bounds(values: np.ndarray, low: float | None, high: float | None, zero
 	return minimum, maximum
 
 
-def _add_native_chart(book: xw.Book, sheet: xw.Sheet, frame: pd.DataFrame, spec: ChartSpecification) -> list[str]:
-	helper, last_row, error_series = _chart_data(book, frame, spec)
+def _remove_generated_charts(book: xw.Book) -> None:
+	for sheet in book.sheets:
+		charts = sheet.api.ChartObjects()
+		for index in range(int(charts.Count), 0, -1):
+			chart_object = charts.Item(index)
+			if str(chart_object.Name) == "PLVS_ULTRA_Chart":
+				chart_object.Delete()
+
+
+def _add_native_chart(
+	book: xw.Book,
+	sheet: xw.Sheet,
+	data_range: xw.Range,
+	frame: pd.DataFrame,
+	spec: ChartSpecification,
+) -> None:
+	x_values = pd.to_numeric(frame[spec.x_column], errors="coerce").to_numpy(dtype=float)
+	y_values = pd.to_numeric(frame[spec.y_column], errors="coerce").to_numpy(dtype=float)
+	valid = np.isfinite(x_values) & np.isfinite(y_values)
+	if int(valid.sum()) < 2 or np.unique(x_values[valid]).size < 2:
+		raise ValueError("Mindestens zwei gültige Messwertpaare mit verschiedenen x-Werten sind erforderlich.")
+	degree = {"linear": 1, "quadratic": 2, "cubic": 3}.get(spec.trendline)
+	if spec.trendline != "none":
+		if degree is None:
+			raise ValueError(f"Unbekannte Trendlinie: {spec.trendline}")
+		if np.unique(x_values[valid]).size <= degree:
+			raise ValueError(f"Ein Fit vom Grad {degree} benötigt mindestens {degree + 1} unterschiedliche x-Werte.")
+	_remove_generated_charts(book)
 	used = sheet.used_range.api
 	left = float(used.Left) + float(used.Width) + 24
 	top = float(used.Top)
 	chart_object = sheet.api.ChartObjects().Add(left, top, 500, 300)
+	chart_object.Name = "PLVS_ULTRA_Chart"
 	chart = chart_object.Chart
 	chart.ChartType = 74 if spec.connect_points or spec.chart_type in {"line", "line_scatter"} else -4169
 	chart.HasTitle = True
@@ -623,14 +679,20 @@ def _add_native_chart(book: xw.Book, sheet: xw.Sheet, frame: pd.DataFrame, spec:
 	chart.HasLegend = False
 	series = chart.SeriesCollection().NewSeries()
 	series.Name = "Messwerte"
-	x_letter, y_letter = _excel_column(1), _excel_column(2)
-	series.XValues = helper.range(f"{x_letter}2:{x_letter}{last_row}").api
-	series.Values = helper.range(f"{y_letter}2:{y_letter}{last_row}").api
+	first_data_row = int(data_range.api.Row) + 1
+	last_data_row = int(data_range.api.Row) + int(data_range.api.Rows.Count) - 1
+	if last_data_row < first_data_row:
+		raise ValueError("Der ausgewählte Bereich enthält keine Datenzeilen.")
+	first_column = int(data_range.api.Column)
+	x_column = first_column + int(frame.columns.get_loc(spec.x_column))
+	y_column = first_column + int(frame.columns.get_loc(spec.y_column))
+	series.XValues = sheet.range((first_data_row, x_column), (last_data_row, x_column)).api
+	series.Values = sheet.range((first_data_row, y_column), (last_data_row, y_column)).api
 	series.MarkerStyle = 8 if spec.show_points else -4142
 	chart.DisplayBlanksAs = 1
 	for axis_type, label, values, minimum, maximum, quantity in (
-		(1, spec.x_label, pd.to_numeric(frame[spec.x_column], errors="coerce").to_numpy(dtype=float), spec.x_min, spec.x_max, spec.x_quantity),
-		(2, spec.y_label, pd.to_numeric(frame[spec.y_column], errors="coerce").to_numpy(dtype=float), spec.y_min, spec.y_max, spec.y_quantity),
+		(1, spec.x_label, x_values, spec.x_min, spec.x_max, spec.x_quantity),
+		(2, spec.y_label, y_values, spec.y_min, spec.y_max, spec.y_quantity),
 	):
 		axis = chart.Axes(axis_type)
 		axis.HasTitle = True
@@ -642,52 +704,27 @@ def _add_native_chart(book: xw.Book, sheet: xw.Sheet, frame: pd.DataFrame, spec:
 		axis_minimum, axis_maximum = _axis_bounds(valid_values, minimum, maximum, is_zero)
 		axis.MinimumScale = axis_minimum
 		axis.MaximumScale = axis_maximum
-	for direction, x_column, y_column, error_last_row in error_series:
-		error_line = chart.SeriesCollection().NewSeries()
-		error_line.Name = f"{direction}-Fehler"
-		error_line.XValues = helper.range(f"{_excel_column(x_column)}2:{_excel_column(x_column)}{error_last_row}").api
-		error_line.Values = helper.range(f"{_excel_column(y_column)}2:{_excel_column(y_column)}{error_last_row}").api
-		error_line.ChartType = 74
-		error_line.MarkerStyle = -4142
-		error_line.Format.Line.ForeColor.RGB = 0x777777
-		error_line.Format.Line.Weight = 1
 	if spec.trendline != "none":
-		degree = {"linear": 1, "quadratic": 2, "cubic": 3}.get(spec.trendline)
-		if degree is None:
-			raise ValueError(f"Unbekannte Trendlinie: {spec.trendline}")
-		unique_x = np.unique(pd.to_numeric(frame[spec.x_column], errors="coerce").dropna())
-		if unique_x.size <= degree:
-			raise ValueError(f"Ein Fit vom Grad {degree} benötigt mindestens {degree + 1} unterschiedliche x-Werte.")
 		trendlines = series.Trendlines()
 		if degree == 1:
 			trendlines.Add(Type=-4132, Name="Lineare Ausgleichsgerade")
 		else:
 			trendlines.Add(Type=3, Order=degree, Name=f"Polynomfit Grad {degree}")
-	return []
-
-
-def _target_for(book: xw.Book, data_sheet: xw.Sheet) -> tuple[xw.Sheet, None]:
-	return data_sheet, None
+	_set_text_name(book, CHART_SHEET_NAME, sheet.name)
 
 
 def create_chart() -> None:
 	def action(book: xw.Book) -> None:
-		data_sheet = _active_data_sheet(book)
-		frame = _frame_from_sheet(data_sheet)
+		data_sheet, data_range = _source_for_chart(book)
+		frame = _frame_from_range(data_range)
 		columns = get_numeric_columns(frame)
 		if len(columns) < 2:
-			raise ValueError("Keine geeigneten Messwertspalten gefunden. Mindestens zwei numerische Spalten sind erforderlich.")
-		settings = _settings_sheet(book, columns)
-		spec, candidates = _resolve_spec(book, frame, columns, allow_ai=True)
-		target_sheet, _ = _target_for(book, data_sheet)
-		warnings = _add_native_chart(book, target_sheet, frame, spec)
-		book.save()
-		_write_analysis(book, spec, candidates)
-		book.save()
-		message = f"Diagramm erstellt: {spec.x_label} gegen {spec.y_label}."
-		if warnings:
-			message += "\n" + " ".join(warnings)
-		message += "\nDiagramm direkt in der geöffneten Arbeitsmappe erstellt."
+			raise ValueError("Die ausgewählte Datenquelle benötigt mindestens zwei numerische Messspalten.")
+		spec, _ = _resolve_spec(book, frame, columns, allow_ai=True)
+		_add_native_chart(book, data_sheet, data_range, frame, spec)
+		_write_analysis(book, frame, spec)
+		data_sheet.activate()
+		message = f"Diagramm und Analyse erstellt: {spec.x_label} gegen {spec.y_label}."
 		_write_status(book, message)
 		_message(book, message)
 	_safe_action(action)
@@ -695,10 +732,9 @@ def create_chart() -> None:
 
 def test_ai() -> None:
 	def action(book: xw.Book) -> None:
-		_settings_sheet(book)
-		config = _get_ai_config(book)
+		config = _get_ai_config()
 		if not config["endpoint"] or not config["model"]:
-			raise AIServiceError("KI-Einstellungen unvollständig. Endpoint und Modell im Dashboard eintragen; den API-Key in config.json.")
+			raise AIServiceError("KI-Einstellungen unvollständig. Endpoint und Modell über „KI-Einstellungen“ eintragen.")
 		test_ai_connection(config)
 		_write_status(book, "KI-Verbindung erfolgreich.")
 		_message(book, "KI-Verbindung erfolgreich.")

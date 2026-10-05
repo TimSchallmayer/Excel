@@ -1,18 +1,24 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui" xmlns:xw="http://schemas.microsoft.com/office/2006/01/customui">
+<customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui" onLoad="PLVS_RibbonOnLoad">
   <ribbon>
     <tabs>
-      <tab id="PLVSULTRAGraphsTab" label="PLVS ULTRA Graphs" insertAfterQ="xw:xlwingsTab">
+      <tab id="PLVSULTRAGraphsTab" label="PLVS ULTRA Graphs">
         <group id="PLVSDiagramGroup" label="Diagramm">
-          <button id="PLVSAnalyze" label="Analysieren" size="large" imageMso="ReviewTrackChanges" onAction="PLVS_RibbonAnalyze"/>
           <button id="PLVSCreateChart" label="Diagramm erstellen" size="large" imageMso="ChartInsert" onAction="PLVS_RibbonCreateChart"/>
+          <button id="PLVSSelectDataSource" label="Datenquelle auswählen" size="large" imageMso="TableSelect" onAction="PLVS_RibbonSelectDataSource"/>
         </group>
         <group id="PLVSAIGroup" label="KI">
-          <button id="PLVSTestAI" label="KI testen" size="large" imageMso="CheckForIssues" onAction="PLVS_RibbonTestAI"/>
           <button id="PLVSAISettings" label="KI-Einstellungen" size="large" imageMso="AdvancedFileProperties" onAction="PLVS_RibbonAISettings"/>
+          <button id="PLVSTestAI" label="KI testen" size="large" imageMso="RefreshAll" onAction="PLVS_RibbonTestAI"/>
         </group>
         <group id="PLVSAnalysisGroup" label="Analyse">
-          <button id="PLVSShowAnalysis" label="Analyse anzeigen" size="large" imageMso="ViewReport" onAction="PLVS_RibbonShowAnalysis"/>
+          <box id="PLVSAnalysisBox" boxStyle="vertical">
+            <labelControl id="PLVSAnalysisAxes" getLabel="PLVS_RibbonGetAnalysis"/>
+            <labelControl id="PLVSAnalysisChartFit" getLabel="PLVS_RibbonGetAnalysis"/>
+            <labelControl id="PLVSAnalysisMetrics" getLabel="PLVS_RibbonGetAnalysis"/>
+          </box>
+        </group>
+        <group id="PLVSUtilityGroup" label="Sonstiges">
           <button id="PLVSHelp" label="Hilfe" size="large" imageMso="Help" onAction="PLVS_RibbonHelp"/>
         </group>
       </tab>

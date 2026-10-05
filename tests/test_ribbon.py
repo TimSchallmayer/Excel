@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from zipfile import ZIP_DEFLATED, ZipFile
 from xml.etree import ElementTree
+
+import xlwings as xw
+
+from excel_bridge import _add_ribbon_to_package
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class DashboardAndBridgeTests(unittest.TestCase):
-	def test_ribbon_tab_is_after_xlwings_with_six_real_callbacks(self) -> None:
+	def test_ribbon_tab_has_expected_callbacks_and_analysis(self) -> None:
 		ribbon_path = ROOT / "ribbon" / "customUI.xml"
 		bridge_path = ROOT / "excel_vba" / "PLVSBridge.bas"
 		root = ElementTree.parse(ribbon_path).getroot()
@@ -16,42 +22,125 @@ class DashboardAndBridgeTests(unittest.TestCase):
 		tab = root.find("r:ribbon/r:tabs/r:tab", namespace)
 		self.assertIsNotNone(tab)
 		self.assertEqual(tab.attrib["label"], "PLVS ULTRA Graphs")
-		self.assertEqual(tab.attrib["insertAfterQ"], "xw:xlwingsTab")
+		self.assertNotIn("insertAfterQ", tab.attrib)
+		self.assertEqual(root.attrib["onLoad"], "PLVS_RibbonOnLoad")
 		groups = tab.findall("r:group", namespace)
-		self.assertEqual([group.attrib["label"] for group in groups], ["Diagramm", "KI", "Analyse"])
+		self.assertEqual([group.attrib["label"] for group in groups], ["Diagramm", "KI", "Analyse", "Sonstiges"])
 		buttons = tab.findall(".//r:button", namespace)
 		self.assertEqual(
 			[button.attrib["label"] for button in buttons],
-			["Analysieren", "Diagramm erstellen", "KI testen", "KI-Einstellungen", "Analyse anzeigen", "Hilfe"],
+			["Diagramm erstellen", "Datenquelle auswählen", "KI-Einstellungen", "KI testen", "Hilfe"],
 		)
+		test_ai_button = root.find(".//r:button[@id='PLVSTestAI']", namespace)
+		self.assertIsNotNone(test_ai_button)
+		self.assertEqual(test_ai_button.attrib["imageMso"], "RefreshAll")
+		analysis_labels = tab.findall(".//r:labelControl", namespace)
+		self.assertEqual(
+			[label.attrib["id"] for label in analysis_labels],
+			["PLVSAnalysisAxes", "PLVSAnalysisChartFit", "PLVSAnalysisMetrics"],
+		)
+		self.assertTrue(all(label.attrib["getLabel"] == "PLVS_RibbonGetAnalysis" for label in analysis_labels))
 		bridge = bridge_path.read_text(encoding="utf-8")
 		python_functions = {
-			"PLVS_RibbonAnalyze": "analyze_table",
 			"PLVS_RibbonCreateChart": "create_chart",
-			"PLVS_RibbonTestAI": "test_ai",
+			"PLVS_RibbonSelectDataSource": "select_data_source",
 			"PLVS_RibbonAISettings": "open_ai_settings",
-			"PLVS_RibbonShowAnalysis": "show_analysis",
+			"PLVS_RibbonTestAI": "test_ai",
 			"PLVS_RibbonHelp": "show_help",
 		}
 		for callback, function in python_functions.items():
 			self.assertIn(f"onAction=\"{callback}\"", ribbon_path.read_text(encoding="utf-8"))
 			self.assertIn(f"Public Sub {callback}(control As IRibbonControl)", bridge)
 			self.assertIn(f"excel_addin.{function}()", bridge)
+		self.assertIn("Public Sub PLVS_RibbonOnLoad(ribbon As IRibbonUI)", bridge)
+		for label_id in ("PLVSAnalysisAxes", "PLVSAnalysisChartFit", "PLVSAnalysisMetrics"):
+			self.assertIn(f'PLVS_Ribbon.InvalidateControl "{label_id}"', bridge)
+		self.assertIn('Case "PLVSAnalysisMetrics"', bridge)
 
-	def test_dashboard_uses_workbook_sheet_ui(self) -> None:
+	def test_installed_xlwings_addin_hides_only_its_ribbon_tab(self) -> None:
+		addin_path = Path(xw.__file__).resolve().parent / "addin" / "xlwings.xlam"
+		namespace = {"r": "http://schemas.microsoft.com/office/2006/01/customui"}
+		with ZipFile(addin_path) as addin:
+			ribbon = ElementTree.fromstring(addin.read("customUI/customUI.xml"))
+		tab = ribbon.find(".//r:tab[@id='xlwingsTab']", namespace)
+		self.assertIsNotNone(tab)
+		self.assertEqual(tab.attrib.get("visible"), "false")
+		xlwings_vba = (Path(xw.__file__).resolve().parent / "xlwings_custom_addin.bas").read_text(encoding="utf-8")
+		self.assertIn("Public Function RunPython", xlwings_vba)
+
+	def test_ribbon_is_embedded_with_package_relationship_and_xml_default_type(self) -> None:
+		package_namespace = "http://schemas.openxmlformats.org/package/2006"
+		content_types_namespace = f"{package_namespace}/content-types"
+		relationships_namespace = f"{package_namespace}/relationships"
+		with TemporaryDirectory() as folder:
+			addin_path = Path(folder) / "test.xlam"
+			with ZipFile(addin_path, "w", ZIP_DEFLATED) as addin:
+				addin.writestr(
+					"[Content_Types].xml",
+					f"""<?xml version="1.0" encoding="UTF-8"?>
+					<Types xmlns="{content_types_namespace}">
+						<Default Extension="xml" ContentType="application/xml"/>
+						<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+					</Types>""",
+				)
+				addin.writestr(
+					"_rels/.rels",
+					f"""<?xml version="1.0" encoding="UTF-8"?>
+					<Relationships xmlns="{relationships_namespace}"/>""",
+				)
+
+			_add_ribbon_to_package(addin_path)
+
+			with ZipFile(addin_path) as addin:
+				ribbon = ElementTree.fromstring(addin.read("customUI/customUI.xml"))
+				relationships = ElementTree.fromstring(addin.read("_rels/.rels"))
+				content_types = ElementTree.fromstring(addin.read("[Content_Types].xml"))
+			namespace = {"r": "http://schemas.microsoft.com/office/2006/01/customui"}
+			test_button = ribbon.find(".//r:button[@id='PLVSTestAI']", namespace)
+			self.assertIsNotNone(test_button)
+			self.assertEqual(test_button.attrib["imageMso"], "RefreshAll")
+			analysis_group = ribbon.find(".//r:group[@id='PLVSAnalysisGroup']", namespace)
+			self.assertIsNotNone(analysis_group)
+			self.assertEqual(
+				[label.attrib["id"] for label in analysis_group.findall(".//r:labelControl", namespace)],
+				["PLVSAnalysisAxes", "PLVSAnalysisChartFit", "PLVSAnalysisMetrics"],
+			)
+
+		relationship = relationships.find(
+			f"{{{relationships_namespace}}}Relationship[@Type='http://schemas.microsoft.com/office/2006/relationships/ui/extensibility']"
+		)
+		self.assertIsNotNone(relationship)
+		self.assertEqual(relationship.attrib["Target"], "customUI/customUI.xml")
+		xml_default = content_types.find(
+			f"{{{content_types_namespace}}}Default[@Extension='xml']"
+		)
+		self.assertIsNotNone(xml_default)
+		self.assertEqual(xml_default.attrib["ContentType"], "application/xml")
+		self.assertIsNone(
+			content_types.find(
+				f"{{{content_types_namespace}}}Override[@PartName='/customUI/customUI.xml']"
+			)
+		)
+		self.assertEqual(ribbon.tag, "{http://schemas.microsoft.com/office/2006/01/customui}customUI")
+
+	def test_normal_addin_does_not_create_or_use_a_dashboard_sheet(self) -> None:
 		python_source = (ROOT / "excel_addin.py").read_text(encoding="utf-8")
 		self.assertIn('PRODUCT_NAME = "PLVS ULTRA Graphs"', python_source)
-		for label in ("ANALYSIEREN", "DIAGRAMM ERSTELLEN", "KI-EINSTELLUNGEN", "ANALYSE", "HILFE"):
-			self.assertIn(f'"{label}"', python_source)
+		self.assertNotIn("def _settings_sheet", python_source)
+		self.assertNotIn("def ensure_dashboard", python_source)
+		self.assertIn("def _set_text_name", python_source)
+		self.assertIn("def _write_analysis", python_source)
 		self.assertIn("def show_help()", python_source)
+		bridge_source = (ROOT / "excel_bridge.py").read_text(encoding="utf-8")
+		self.assertNotIn("ensure_dashboard", bridge_source)
 
-	def test_bridge_calls_match_dashboard_actions(self) -> None:
+	def test_bridge_calls_match_ribbon_actions(self) -> None:
 		bridge = (ROOT / "excel_vba" / "PLVSBridge.bas").read_text(encoding="utf-8")
 		for action in (
-			"PLVS_ULTRA_Analyze",
 			"PLVS_ULTRA_CreateChart",
+			"PLVS_ULTRA_SelectDataSource",
 			"PLVS_ULTRA_AISettings",
-			"PLVS_ULTRA_ShowAnalysis",
+			"PLVS_ULTRA_TestAI",
 			"PLVS_ULTRA_Help",
 		):
 			self.assertIn(f"Public Sub {action}()", bridge)

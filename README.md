@@ -2,15 +2,16 @@
 
 PLVS ULTRA Graphs ist ein kleines Werkzeug zur Analyse physikalischer Messreihen in Excel. Es erkennt lokale Größen und Einheiten, prüft passende Zusammenhänge und erstellt ein natives Excel-XY-Diagramm mit optionalen Trendlinien. Die Ausgabe ist kein PNG, sondern eine bearbeitbare Excel-Arbeitsmappe.
 
-Die Excel-Oberfläche ist ein eigenes Ribbon-Register neben der vorhandenen xlwings-Registerkarte. Das Blatt `PLVS ULTRA Graphs` bleibt als Analyse- und Statusanzeige erhalten.
+Die Excel-Oberfläche ist das eigene Ribbon-Register **PLVS ULTRA Graphs**. Analyse und Datenquellenauswahl werden im Menüband angezeigt; für die normale Benutzung werden keine Arbeitsblätter angelegt.
 
 ## Funktionen
 
 - echte Excel-Diagramme mit nativem Scatter-/XY-Chart
 - lokale physikalische Erkennung von Größen und Einheiten
-- Auswahl von unabhängiger/abhängiger Variable mit manuellem Fallback
+- Erkennung und Auswahl von Excel-Tabellen und zusammenhängenden Datenbereichen
+- Auswahl eines Zellbereichs direkt in Excel als manueller Fallback
 - optionale KI-Unterstützung für Mehrdeutigkeiten
-- einfache Excel-Startseite mit Grundfunktionen und Hilfsblättern
+- kompakte Analyseinformationen direkt im Ribbon
 
 ## Unterstützte Umgebung
 
@@ -78,7 +79,11 @@ Die Analyse funktioniert am zuverlässigsten mit klaren Überschriften in der er
 
 ## Excel-Ribbon
 
-Das Ribbon-Add-in hat die Gruppen **Diagramm**, **KI** und **Analyse** mit den sechs Aktionen Analysieren, Diagramm erstellen, KI testen, KI-Einstellungen, Analyse anzeigen und Hilfe. Die VBA-Callbacks rufen die vorhandenen Python-Funktionen über xlwings `RunPython` auf; analysiert wird die aktive Arbeitsmappe.
+Das Add-in bietet einen eigenen Tab **PLVS ULTRA Graphs** mit den Gruppen **Diagramm**, **KI**, **Analyse** und **Sonstiges**. **Datenquelle auswählen** erkennt Excel-Tabellen sowie zusammenhängende Messwertbereiche in sichtbaren Blättern. Gibt es genau eine geeignete Quelle, wird sie automatisch gewählt; bei mehreren Quellen erscheint eine Auswahl. Über **Manuell auswählen** kann ein Zellbereich direkt in Excel markiert werden.
+
+**Diagramm erstellen** analysiert die ausgewählte Quelle automatisch und erzeugt ein natives Diagramm direkt auf deren Arbeitsblatt. Ein erneuter Aufruf ersetzt das zuvor von PLVS erzeugte Diagramm. Datenzellen werden nicht verändert; Analyse, Einstellungen und Quellbereich werden als ausgeblendete Arbeitsmappennamen gespeichert. Die normale Benutzung legt keine Analyse-, Dashboard-, Daten- oder Hilfsblätter an.
+
+Die Ribbon-Gruppe **Analyse** zeigt nach dem Erstellen des Diagramms kompakt x-/y-Größe samt Einheit, Diagrammtyp und Fit sowie Messpunktzahl und Mittelwert. Confidence wird angezeigt, wenn sie in der vorhandenen Analyse vorliegt. Die Anzeige wird nach Auswahl und Diagrammerstellung automatisch aktualisiert. **KI-Einstellungen** fragt Endpoint, Modell und optionale KI-Nutzung über Excel-Dialoge ab; Zugangsdaten werden ausschließlich lokal in `config.json` gespeichert.
 
 ### Installation
 
@@ -90,11 +95,19 @@ xlwings addin install
 .\.venv\Scripts\python.exe excel_bridge.py create-addin
 ```
 
-In Excel unter **Datei > Optionen > Add-Ins > Verwalten: Excel-Add-Ins > Gehe zu > Durchsuchen** die Datei `dist\PLVS ULTRA Graphs Ribbon.xlam` hinzufügen und aktivieren. Das xlwings-Add-in muss ebenfalls aktiviert bleiben. Excel anschließend neu starten. Der PLVS-Tab wird per `insertAfterQ` direkt nach dem xlwings-Tab angeordnet.
+Der Build erzeugt bzw. aktualisiert immer dieselbe Datei `dist\PLVS ULTRA Graphs.xlam`. Excel muss beim Neuerzeugen geschlossen sein.
 
-Das Add-in speichert den Interpreterpfad auf die Projekt-`.venv`. Makros müssen aktiviert sein. Der einmalige VBA-Projektzugriff im Trust Center wird benötigt, wenn das Add-in neu erzeugt wird; für die normale Verwendung der fertigen `.xlam`-Datei nicht.
+In Excel unter **Datei > Optionen > Add-Ins > Verwalten: Excel-Add-Ins > Gehe zu** alte PLVS-Einträge deaktivieren und gegebenenfalls entfernen. Danach über **Durchsuchen** genau `dist\PLVS ULTRA Graphs.xlam` auswählen und aktivieren. Das xlwings-Add-in muss geladen bleiben, da dessen `RunPython`-Funktion weiterhin benötigt wird. Falls eine ältere Kopie unter `XLSTART` liegt und den Tab **xlwings** noch anzeigt, synchronisiere sie mit der aktuellen xlwings-Installation:
 
-Das Blatt `PLVS ULTRA Graphs` wird bei Analyse/Diagrammerstellung bei Bedarf als Ergebnis- und Statusanzeige angelegt. Die sechs Aktionen bleiben im Ribbon.
+```powershell
+xlwings addin install
+```
+
+Die aktuelle Add-in-Definition blendet nur den xlwings-Ribbon-Tab mit `visible="false"` aus; das Add-in und `RunPython` bleiben erhalten. Excel vollständig schließen und neu starten, damit die Ribbon-Definition neu geladen wird.
+
+Zur Versionskontrolle muss der ausgewählte Eintrag auf die gerade erzeugte Datei `dist\PLVS ULTRA Graphs.xlam` zeigen. In der Registrierung dürfen keine alten PLVS-Add-in-Pfade unter `HKCU\Software\Microsoft\Office\16.0\Excel\Options` (`OPEN`, `OPEN1`, `OPEN2` usw.) mehr aktiviert sein.
+
+Das Add-in arbeitet immer mit der aktuell aufrufenden Arbeitsmappe (`xw.Book.caller()`), nicht mit einer festen Datei oder einer zusätzlichen Arbeitsmappe. Es verändert die ausgewählten Messdaten nicht und erzeugt keine zusätzlichen Arbeitsblätter. Makros müssen aktiviert sein. Der einmalige VBA-Projektzugriff im Trust Center wird benötigt, wenn das Add-in neu erzeugt wird; für die normale Verwendung der fertigen `.xlam`-Datei nicht.
 
 ## Tests
 
@@ -104,6 +117,8 @@ $env:PHYSIK_EXCEL_COM_TESTS='1'
 ```
 
 Der COM-Test benötigt Windows mit installiertem Excel. Er lädt die Add-ins und prüft die aktive Arbeitsmappe sowie das native Diagramm.
+
+Der Ribbon-Test ist zusätzlich direkt in Excel zu prüfen: Excel vollständig schließen, neu starten, eine beliebige `Test.xlsx` öffnen und kontrollieren, dass **PLVS ULTRA Graphs** mit **Diagramm erstellen**, **Datenquelle auswählen**, **KI-Einstellungen**, **KI testen**, **Analyse** und **Hilfe** erscheint. Der xlwings-Tab soll nicht sichtbar sein; das xlwings-Add-in muss trotzdem geladen bleiben. Dafür muss keine spezielle `.xlsm` geöffnet sein.
 
 ## Was das Projekt aktuell erzeugt
 
