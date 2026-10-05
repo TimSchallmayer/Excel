@@ -25,25 +25,41 @@ class DashboardAndBridgeTests(unittest.TestCase):
 		self.assertNotIn("insertAfterQ", tab.attrib)
 		self.assertEqual(root.attrib["onLoad"], "PLVS_RibbonOnLoad")
 		groups = tab.findall("r:group", namespace)
-		self.assertEqual([group.attrib["label"] for group in groups], ["Diagramm", "KI", "Analyse", "Sonstiges"])
+		self.assertEqual([group.attrib["label"] for group in groups], ["Diagramm", "KI", "Sonstiges"])
 		buttons = tab.findall(".//r:button", namespace)
 		self.assertEqual(
 			[button.attrib["label"] for button in buttons],
-			["Diagramm erstellen", "Datenquelle auswählen", "KI-Einstellungen", "KI testen", "Hilfe"],
+			["Diagramm erstellen", "KI-Einstellungen", "KI testen", "Hilfe"],
 		)
 		test_ai_button = root.find(".//r:button[@id='PLVSTestAI']", namespace)
 		self.assertIsNotNone(test_ai_button)
 		self.assertEqual(test_ai_button.attrib["imageMso"], "RefreshAll")
-		analysis_labels = tab.findall(".//r:labelControl", namespace)
+		contextual_tab_set = root.find(
+			"r:ribbon/r:contextualTabs/r:tabSet[@idMso='TabSetChartTools']",
+			namespace,
+		)
+		self.assertIsNotNone(contextual_tab_set)
+		contextual_tab = contextual_tab_set.find("r:tab[@idMso='TabChartDesign']", namespace)
+		self.assertIsNotNone(contextual_tab)
+		self.assertEqual(contextual_tab.find("r:group", namespace).attrib["label"], "Analyse")
+		analysis_labels = contextual_tab.findall(".//r:labelControl", namespace)
 		self.assertEqual(
 			[label.attrib["id"] for label in analysis_labels],
-			["PLVSAnalysisAxes", "PLVSAnalysisChartFit", "PLVSAnalysisMetrics"],
+			[
+				"PLVSAnalysisAxes",
+				"PLVSAnalysisRelationship",
+				"PLVSAnalysisChartFit",
+				"PLVSAnalysisMetrics",
+				"PLVSAnalysisStatistics",
+				"PLVSAnalysisChange",
+				"PLVSAnalysisAI",
+			],
 		)
 		self.assertTrue(all(label.attrib["getLabel"] == "PLVS_RibbonGetAnalysis" for label in analysis_labels))
+		self.assertFalse(any("Datenquelle" in button.attrib.get("label", "") for button in buttons))
 		bridge = bridge_path.read_text(encoding="utf-8")
 		python_functions = {
 			"PLVS_RibbonCreateChart": "create_chart",
-			"PLVS_RibbonSelectDataSource": "select_data_source",
 			"PLVS_RibbonAISettings": "open_ai_settings",
 			"PLVS_RibbonTestAI": "test_ai",
 			"PLVS_RibbonHelp": "show_help",
@@ -53,9 +69,37 @@ class DashboardAndBridgeTests(unittest.TestCase):
 			self.assertIn(f"Public Sub {callback}(control As IRibbonControl)", bridge)
 			self.assertIn(f"excel_addin.{function}()", bridge)
 		self.assertIn("Public Sub PLVS_RibbonOnLoad(ribbon As IRibbonUI)", bridge)
-		for label_id in ("PLVSAnalysisAxes", "PLVSAnalysisChartFit", "PLVSAnalysisMetrics"):
+		self.assertIn("Set PLVS_ApplicationEvents.ExcelApp = Application", bridge)
+		self.assertNotIn("PLVS_IsAnalysisContext", bridge)
+		self.assertIn("Public Sub PLVS_RefreshAnalysis()", bridge)
+		self.assertRegex(
+			bridge,
+			r"(?ms)^Public Sub PLVS_RefreshAnalysis\(\)\r?\n.*?^End Sub\s*$",
+		)
+		app_events = (ROOT / "excel_vba" / "PLVSAppEvents.cls").read_text(encoding="utf-8")
+		self.assertIn("ExcelApp_SheetSelectionChange", app_events)
+		self.assertIn("ExcelApp_WorkbookOpen", app_events)
+		self.assertIn("PLVS_RefreshAnalysis", app_events)
+		self.assertIn("PLVS_WatchCharts", app_events)
+		chart_events = (ROOT / "excel_vba" / "PLVSChartEvents.cls").read_text(encoding="utf-8")
+		self.assertIn("PLVS_Chart_Activate", chart_events)
+		self.assertIn("PLVS_Chart_Deactivate", chart_events)
+		self.assertIn('analysisName = analysisName & "_" & CStr(activeChart.Parent.Name)', bridge)
+		for label_id in (
+			"PLVSAnalysisAxes",
+			"PLVSAnalysisRelationship",
+			"PLVSAnalysisChartFit",
+			"PLVSAnalysisMetrics",
+			"PLVSAnalysisStatistics",
+			"PLVSAnalysisChange",
+			"PLVSAnalysisAI",
+		):
 			self.assertIn(f'PLVS_Ribbon.InvalidateControl "{label_id}"', bridge)
 		self.assertIn('Case "PLVSAnalysisMetrics"', bridge)
+		self.assertIn('Case "PLVSAnalysisStatistics"', bridge)
+		self.assertIn('Case "PLVSAnalysisChange"', bridge)
+		self.assertIn('Case "PLVSAnalysisAI"', bridge)
+		self.assertIn("data_sheet.api.ChartObjects(chart_name).Activate()", (ROOT / "excel_addin.py").read_text(encoding="utf-8"))
 
 	def test_installed_xlwings_addin_hides_only_its_ribbon_tab(self) -> None:
 		addin_path = Path(xw.__file__).resolve().parent / "addin" / "xlwings.xlam"
@@ -103,8 +147,24 @@ class DashboardAndBridgeTests(unittest.TestCase):
 			self.assertIsNotNone(analysis_group)
 			self.assertEqual(
 				[label.attrib["id"] for label in analysis_group.findall(".//r:labelControl", namespace)],
-				["PLVSAnalysisAxes", "PLVSAnalysisChartFit", "PLVSAnalysisMetrics"],
+				[
+					"PLVSAnalysisAxes",
+					"PLVSAnalysisRelationship",
+					"PLVSAnalysisChartFit",
+					"PLVSAnalysisMetrics",
+					"PLVSAnalysisStatistics",
+					"PLVSAnalysisChange",
+					"PLVSAnalysisAI",
+				],
 			)
+			contextual_tab_set = ribbon.find(
+				".//r:contextualTabs/r:tabSet[@idMso='TabSetChartTools']",
+				namespace,
+			)
+			self.assertIsNotNone(contextual_tab_set)
+			self.assertIsNotNone(contextual_tab_set.find("r:tab[@idMso='TabChartDesign']", namespace))
+			self.assertTrue((ROOT / "excel_vba" / "PLVSAppEvents.cls").is_file())
+			self.assertTrue((ROOT / "excel_vba" / "PLVSChartEvents.cls").is_file())
 
 		relationship = relationships.find(
 			f"{{{relationships_namespace}}}Relationship[@Type='http://schemas.microsoft.com/office/2006/relationships/ui/extensibility']"
@@ -138,7 +198,6 @@ class DashboardAndBridgeTests(unittest.TestCase):
 		bridge = (ROOT / "excel_vba" / "PLVSBridge.bas").read_text(encoding="utf-8")
 		for action in (
 			"PLVS_ULTRA_CreateChart",
-			"PLVS_ULTRA_SelectDataSource",
 			"PLVS_ULTRA_AISettings",
 			"PLVS_ULTRA_TestAI",
 			"PLVS_ULTRA_Help",

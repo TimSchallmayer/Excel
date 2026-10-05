@@ -8,6 +8,7 @@ from unittest.mock import patch
 from openpyxl import Workbook
 
 import main
+from ai import AIServiceError
 from models import ChartSpecification
 
 
@@ -22,35 +23,48 @@ class CLITests(unittest.TestCase):
 		workbook.save(path)
 		return path
 
-	def test_unambiguous_local_choice_skips_ai(self) -> None:
-		with tempfile.TemporaryDirectory() as folder:
-			path = self._workbook(folder, ["Zeit [s]", "Spannung [V]"])
-			with (
-				patch("main.analyze_with_ai", side_effect=AssertionError("AI should not be called")),
-				patch("main.save_workbook_with_chart") as save_chart,
-			):
-				self.assertEqual(main.main([str(path), "--ai"]), 0)
-			save_chart.assert_called_once()
-			self.assertEqual(save_chart.call_args.args[3].x_column, "Zeit [s]")
+	def _spec(self) -> ChartSpecification:
+		return ChartSpecification(
+			x_column="Week",
+			y_column="Active users",
+			x_label="Week",
+			y_label="Active users",
+			trendline="exponential",
+			confidence=0.92,
+			reason="The values grow exponentially.",
+		)
 
-	def test_ambiguous_choice_uses_ai_when_enabled(self) -> None:
+	def test_chart_creation_always_uses_ai(self) -> None:
 		with tempfile.TemporaryDirectory() as folder:
-			path = self._workbook(folder, ["Zeit [s]", "Spannung [V]", "Stromstärke [A]"])
-			spec = ChartSpecification(
-				x_column="Zeit [s]",
-				y_column="Spannung [V]",
-				x_label="Zeit [s]",
-				y_label="Spannung [V]",
-				confidence=0.9,
-				reason="Testdiagnose.",
-			)
+			path = self._workbook(folder, ["Week", "Active users"])
+			spec = self._spec()
 			with (
 				patch("main.load_config", return_value={"endpoint": "http://localhost", "api_key": "", "model": "test"}),
 				patch("main.analyze_with_ai", return_value=spec) as analyze,
-				patch("main.save_workbook_with_chart"),
+				patch("main.save_workbook_with_chart") as save_chart,
 			):
-				self.assertEqual(main.main([str(path), "--ai"]), 0)
+				self.assertEqual(main.main([str(path)]), 0)
 			analyze.assert_called_once()
+			save_chart.assert_called_once()
+			self.assertEqual(save_chart.call_args.args[3], spec)
+			self.assertEqual(save_chart.call_args.args[4], "exponential")
+
+	def test_ai_error_prevents_chart_creation(self) -> None:
+		with tempfile.TemporaryDirectory() as folder:
+			path = self._workbook(folder, ["Week", "Active users"])
+			with (
+				patch("main.load_config", return_value={"endpoint": "http://localhost", "api_key": "", "model": "test"}),
+				patch("main.analyze_with_ai", side_effect=AIServiceError("KI nicht verfügbar")),
+				patch("main.save_workbook_with_chart") as save_chart,
+			):
+				self.assertEqual(main.main([str(path)]), 2)
+			save_chart.assert_not_called()
+
+	def test_cli_does_not_accept_local_axis_or_fit_overrides(self) -> None:
+		with tempfile.TemporaryDirectory() as folder:
+			path = self._workbook(folder, ["Week", "Active users"])
+			with self.assertRaises(SystemExit):
+				main.main([str(path), "--x", "Week"])
 
 	def test_test_ai_mode_does_not_require_excel_file(self) -> None:
 		with (

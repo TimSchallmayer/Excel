@@ -13,13 +13,15 @@ import pandas as pd
 import requests
 
 from models import ChartSpecification
-from physics import identify_column, relationship_hints
 from prompts import ANALYSIS_SYSTEM_PROMPT
 
 AI_TIMEOUT_SECONDS = 30
+MIN_AI_CONFIDENCE = 0.75
 MAX_PROMPT_COLUMNS = 40
 MAX_PROMPT_ROWS = 30
 MAX_CELL_CHARS = 120
+MAX_REASON_CHARS = 300
+VALID_TRENDLINES = {"none", "linear", "quadratic", "cubic", "exponential", "logarithmic", "power"}
 
 
 class AIServiceError(ValueError):
@@ -192,9 +194,6 @@ def validate_ai_response(
 		raise AIServiceError("Die x- und y-Spalte müssen unterschiedlich sein.")
 	if x_column not in columns or y_column not in columns:
 		raise AIServiceError("Die von der KI gewählte x- oder y-Spalte enthält keine numerischen Messwerte.")
-	if identify_column(x_column)[2] or identify_column(y_column)[2]:
-		raise AIServiceError("Eine Fehlerwert-Spalte darf nicht als Messachse verwendet werden.")
-
 	values: dict[str, np.ndarray] = {}
 	for column in (x_column, y_column):
 		numeric = pd.to_numeric(data[column], errors="coerce").to_numpy(dtype=float)
@@ -209,21 +208,45 @@ def validate_ai_response(
 	if not isinstance(chart_type, str) or chart_type not in {"scatter", "line", "line_scatter"}:
 		raise AIServiceError("Die Diagrammart muss scatter, line oder line_scatter sein.")
 	trendline = response["trendline"]
-	if not isinstance(trendline, str) or trendline not in {"none", "linear", "quadratic", "cubic"}:
-		raise AIServiceError("Die Trendlinie muss none, linear, quadratic oder cubic sein.")
+	if not isinstance(trendline, str) or trendline not in VALID_TRENDLINES:
+		raise AIServiceError("Die Trendlinie muss einer der unterstützten Werte sein: none, linear, quadratic, cubic, exponential, logarithmic, power.")
 	if trendline == "linear" and np.unique(values[x_column]).size < 2:
 		raise AIServiceError("Ein linearer Fit benötigt mindestens zwei unterschiedliche x-Werte.")
 	if trendline == "quadratic" and np.unique(values[x_column]).size < 3:
 		raise AIServiceError("Ein quadratischer Fit benötigt mindestens drei unterschiedliche x-Werte.")
 	if trendline == "cubic" and np.unique(values[x_column]).size < 4:
 		raise AIServiceError("Ein kubischer Fit benötigt mindestens vier unterschiedliche x-Werte.")
+	if trendline == "exponential":
+		if np.unique(values[x_column]).size < 3:
+			raise AIServiceError("Ein exponentieller Fit benötigt mindestens drei unterschiedliche x-Werte.")
+		if np.any(values[y_column] <= 0):
+			raise AIServiceError("Ein exponentieller Fit erfordert positive y-Werte.")
+	if trendline == "logarithmic":
+		if np.unique(values[x_column]).size < 2:
+			raise AIServiceError("Eine logarithmische Trendlinie benötigt mindestens zwei unterschiedliche x-Werte.")
+		if np.any(values[x_column] <= 0):
+			raise AIServiceError("Eine logarithmische Trendlinie erfordert positive x-Werte.")
+	if trendline == "power":
+		if np.unique(values[x_column]).size < 2:
+			raise AIServiceError("Eine Potenztrendlinie benötigt mindestens zwei unterschiedliche x-Werte.")
+		if np.any(values[x_column] <= 0) or np.any(values[y_column] <= 0):
+			raise AIServiceError("Eine Potenztrendlinie erfordert positive x- und y-Werte.")
 
 	string_fields = (
-		"independent_variable", "dependent_variable", "x_axis_label", "y_axis_label", "x_unit", "y_unit", "reason",
+		"independent_variable", "dependent_variable", "x_axis_label", "y_axis_label", "x_unit", "y_unit",
 	)
 	for field in string_fields:
-		if not isinstance(response[field], str) or len(response[field]) > 300:
+		if not isinstance(response[field], str) or len(response[field]) > MAX_REASON_CHARS:
 			raise AIServiceError(f"Das Feld {field} muss ein Text mit höchstens 300 Zeichen sein.")
+	if response["independent_variable"] != x_column:
+		raise AIServiceError("Die unabhängige Größe muss exakt der gewählten x-Spalte entsprechen.")
+	if response["dependent_variable"] != y_column:
+		raise AIServiceError("Die abhängige Größe muss exakt der gewählten y-Spalte entsprechen.")
+	reason = response["reason"]
+	if not isinstance(reason, str):
+		raise AIServiceError("Das Feld reason muss ein Text mit höchstens 300 Zeichen sein.")
+	if len(reason) > MAX_REASON_CHARS:
+		reason = reason[:MAX_REASON_CHARS - 3].rstrip() + "..."
 	if not isinstance(response["show_points"], bool):
 		raise AIServiceError("Das Feld show_points muss true oder false sein.")
 	origin = response["origin"]
@@ -248,45 +271,34 @@ def validate_ai_response(
 		if column is not None:
 			if not isinstance(column, str) or column not in allowed_columns:
 				raise AIServiceError(f"Die Fehlerwert-Spalte aus {field} existiert nicht.")
-			if column in {x_column, y_column} or not identify_column(column)[2]:
-				raise AIServiceError(f"{field} muss auf eine erkannte Fehlerwert-Spalte zeigen.")
+			if column in {x_column, y_column}:
+				raise AIServiceError(f"{field} darf nicht mit einer Diagrammachse übereinstimmen.")
 			error_values = pd.to_numeric(data[column], errors="coerce").to_numpy(dtype=float)
 			if not np.any(np.isfinite(error_values) & (error_values >= 0)):
 				raise AIServiceError(f"Die Fehlerwert-Spalte {column!r} enthält keine gültigen Werte.")
 		error_columns[field] = column
 
-	x_quantity, x_unit, _ = identify_column(x_column)
-	y_quantity, y_unit, _ = identify_column(y_column)
-	x_label = response["x_axis_label"]
-	y_label = response["y_axis_label"]
-	if x_quantity and x_unit:
-		x_label, x_unit = f"{x_quantity} [{x_unit}]", x_unit
-	if y_quantity and y_unit:
-		y_label, y_unit = f"{y_quantity} [{y_unit}]", y_unit
-
 	return ChartSpecification(
 		x_column=x_column,
 		y_column=y_column,
-		x_label=x_label or x_column,
-		y_label=y_label or y_column,
-		x_unit=x_unit or response["x_unit"],
-		y_unit=y_unit or response["y_unit"],
+		x_label=response["x_axis_label"] or x_column,
+		y_label=response["y_axis_label"] or y_column,
+		x_unit=response["x_unit"],
+		y_unit=response["y_unit"],
 		chart_type=chart_type,
 		x_min=axis_limits["x_min"],
 		x_max=axis_limits["x_max"],
 		y_min=axis_limits["y_min"],
 		y_max=axis_limits["y_max"],
-		origin="auto" if origin is None else origin,
+		origin=False if origin is None else origin,
 		trendline=trendline,
 		x_error_column=error_columns["x_error_column"],
 		y_error_column=error_columns["y_error_column"],
-		x_quantity=x_quantity or response["independent_variable"] or None,
-		y_quantity=y_quantity or response["dependent_variable"] or None,
 		independent_variable=response["independent_variable"] or None,
 		dependent_variable=response["dependent_variable"] or None,
 		show_points=response["show_points"],
 		confidence=confidence,
-		reason=response["reason"],
+		reason=reason,
 	)
 
 
@@ -304,30 +316,24 @@ def _cell_value(value: Any) -> Any:
 def _table_context(data: pd.DataFrame, columns: list[str]) -> dict[str, Any]:
 	all_columns = [str(column) for column in data.columns]
 	eligible_columns = set(columns)
-	numeric_column_set: set[str] = set()
-	error_columns: set[str] = set()
 	column_info = []
-	for column in all_columns:
-		quantity, unit, is_error = identify_column(column)
+	context_columns = list(dict.fromkeys([*columns, *all_columns]))[:MAX_PROMPT_COLUMNS]
+	for column in context_columns:
 		values = pd.to_numeric(data[column], errors="coerce").to_numpy(dtype=float)
-		if np.isfinite(values).any():
-			numeric_column_set.add(column)
-		if is_error and np.isfinite(values).any():
-			error_columns.add(column)
+		finite_values = values[np.isfinite(values)]
+		non_empty_count = int(data[column].notna().sum())
 		column_info.append({
 			"name": column,
-			"numeric": column in numeric_column_set,
-			"eligible_measurement_axis": column in eligible_columns,
-			"quantity": quantity,
-			"unit": unit or None,
-			"possible_error_values": is_error,
-			"locally_confident": bool(quantity and not is_error),
+			"data_type": str(data[column].dtype),
+			"numeric_measurement_candidate": column in eligible_columns,
+			"non_empty_count": non_empty_count,
+			"missing_count": int(len(data) - non_empty_count),
+			"unique_count": int(data[column].nunique(dropna=True)),
+			"numeric_value_count": int(finite_values.size),
+			"numeric_min": float(finite_values.min()) if finite_values.size else None,
+			"numeric_max": float(finite_values.max()) if finite_values.size else None,
 		})
-	data_columns = [
-		column for column in all_columns
-		if column in numeric_column_set and (column in eligible_columns or column in error_columns)
-	][:MAX_PROMPT_COLUMNS]
-	column_info = column_info[:MAX_PROMPT_COLUMNS]
+	data_columns = list(dict.fromkeys([*columns, *all_columns]))[:MAX_PROMPT_COLUMNS]
 
 	if len(data) <= MAX_PROMPT_ROWS:
 		indexes = list(range(len(data)))
@@ -337,19 +343,8 @@ def _table_context(data: pd.DataFrame, columns: list[str]) -> dict[str, Any]:
 		{column: _cell_value(data.iloc[index][column]) for column in data_columns}
 		for index in indexes
 	]
-	hints = relationship_hints([info["quantity"] for info in column_info])
 	return {
 		"columns": column_info,
-		"local_relationship_hints": [
-			{
-				"x_quantity": hint.x_quantity,
-				"y_quantity": hint.y_quantity,
-				"formula": hint.formula,
-				"context": hint.context,
-				"confidence": hint.confidence,
-			}
-			for hint in hints
-		],
 		"sampled_data_columns": data_columns,
 		"table_row_count": int(len(data)),
 		"sampled_rows_count": len(rows),
@@ -370,7 +365,14 @@ def analyze_with_ai(
 		{"role": "user", "content": json.dumps(context, ensure_ascii=False, allow_nan=False)},
 	])
 	response = _extract_json(_response_text(body))
-	return validate_ai_response(response, data, columns)
+	spec = validate_ai_response(response, data, columns)
+	if spec.confidence < MIN_AI_CONFIDENCE:
+		raise AIServiceError(
+			f"Die KI ist sich bei der Diagrammentscheidung zu unsicher "
+			f"({spec.confidence:.0%}; erforderlich sind mindestens {MIN_AI_CONFIDENCE:.0%}). "
+			"Prüfe die Spaltenüberschriften und Messwerte und versuche es erneut."
+		)
+	return spec
 
 
 def test_ai_connection(config: Mapping[str, str]) -> None:

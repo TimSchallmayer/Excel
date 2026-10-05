@@ -16,6 +16,8 @@ from excel_addin import PRODUCT_NAME
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 BRIDGE_MODULE = PROJECT_ROOT / "excel_vba" / "PLVSBridge.bas"
+APP_EVENTS_MODULE = PROJECT_ROOT / "excel_vba" / "PLVSAppEvents.cls"
+CHART_EVENTS_MODULE = PROJECT_ROOT / "excel_vba" / "PLVSChartEvents.cls"
 RIBBON_DEFINITION = PROJECT_ROOT / "ribbon" / "customUI.xml"
 TEMPLATE_PATH = PROJECT_ROOT / "examples" / "PLVS_ULTRA_Graphs.xlsm"
 XLWINGS_VBA = Path(xw.__file__).resolve().parent / "xlwings.bas"
@@ -66,6 +68,10 @@ def _install_vba_bridge(book: xw.Book) -> None:
 		raise FileNotFoundError(f"xlwings VBA-Modul fehlt: {XLWINGS_VBA}")
 	if not BRIDGE_MODULE.is_file():
 		raise FileNotFoundError(f"PLVS VBA-Brücke fehlt: {BRIDGE_MODULE}")
+	if not APP_EVENTS_MODULE.is_file():
+		raise FileNotFoundError(f"PLVS VBA-Ereignismodul fehlt: {APP_EVENTS_MODULE}")
+	if not CHART_EVENTS_MODULE.is_file():
+		raise FileNotFoundError(f"PLVS VBA-Diagrammereignismodul fehlt: {CHART_EVENTS_MODULE}")
 	project = book.api.VBProject
 	if project is None:
 		raise RuntimeError(
@@ -80,9 +86,11 @@ def _install_vba_bridge(book: xw.Book) -> None:
 	components = project.VBComponents
 	for index in range(components.Count, 0, -1):
 		component = components.Item(index)
-		if component.Name == "PLVSBridge":
+		if component.Name in {"PLVSBridge", "PLVSAppEvents", "PLVSChartEvents"}:
 			components.Remove(component)
 	project.VBComponents.Import(str(BRIDGE_MODULE))
+	project.VBComponents.Import(str(APP_EVENTS_MODULE))
+	project.VBComponents.Import(str(CHART_EVENTS_MODULE))
 
 
 def _install_addin_vba(book: xw.Book) -> None:
@@ -90,10 +98,16 @@ def _install_addin_vba(book: xw.Book) -> None:
 		raise FileNotFoundError(f"xlwings Add-in VBA-Modul fehlt: {XLWINGS_CUSTOM_ADDIN_VBA}")
 	if not BRIDGE_MODULE.is_file():
 		raise FileNotFoundError(f"PLVS VBA-Brücke fehlt: {BRIDGE_MODULE}")
+	if not APP_EVENTS_MODULE.is_file():
+		raise FileNotFoundError(f"PLVS VBA-Ereignismodul fehlt: {APP_EVENTS_MODULE}")
+	if not CHART_EVENTS_MODULE.is_file():
+		raise FileNotFoundError(f"PLVS VBA-Diagrammereignismodul fehlt: {CHART_EVENTS_MODULE}")
 	components = book.api.VBProject.VBComponents
 	for module_name, module_path in (
 		("xlwings", XLWINGS_CUSTOM_ADDIN_VBA),
 		("PLVSBridge", BRIDGE_MODULE),
+		("PLVSAppEvents", APP_EVENTS_MODULE),
+		("PLVSChartEvents", CHART_EVENTS_MODULE),
 	):
 		for index in range(components.Count, 0, -1):
 			component = components.Item(index)

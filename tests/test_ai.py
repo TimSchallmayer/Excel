@@ -21,8 +21,8 @@ class AIValidationTests(unittest.TestCase):
 		})
 		self.columns = ["Zeit [s]", "Strecke [m]"]
 		self.answer = {
-			"independent_variable": "Zeit",
-			"dependent_variable": "Strecke",
+			"independent_variable": "Zeit [s]",
+			"dependent_variable": "Strecke [m]",
 			"x_column": "Zeit [s]",
 			"y_column": "Strecke [m]",
 			"chart_type": "scatter",
@@ -139,6 +139,12 @@ class AIValidationTests(unittest.TestCase):
 		with tempfile.TemporaryDirectory() as folder:
 			with self.assertRaisesRegex(FileNotFoundError, "Keine config.json"):
 				load_config(Path(folder) / "config.json")
+
+	def test_long_ai_reason_is_capped_without_aborting_analysis(self) -> None:
+		answer = self.answer | {"reason": "Begründung " * 40}
+		spec = validate_ai_response(answer, self.data, self.columns)
+		self.assertLessEqual(len(spec.reason), 300)
+		self.assertTrue(spec.reason.endswith("..."))
 
 
 if __name__ == "__main__":

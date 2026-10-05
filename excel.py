@@ -79,12 +79,10 @@ def _axis_bounds(
 	return low, high
 
 
-def _use_zero_origin(origin: bool | str | None, quantity: str | None, values: np.ndarray) -> bool:
-	if origin is True or origin == "yes":
+def _use_zero_origin(origin: bool | None, values: np.ndarray) -> bool:
+	if origin is True:
 		return float(np.min(values)) >= 0
-	if origin is False or origin == "no":
-		return False
-	return quantity != "Temperatur" and float(np.min(values)) >= 0
+	return False
 
 
 def _append_error_bars(
@@ -115,7 +113,7 @@ def create_excel_chart(
 	fit: str = "none",
 ) -> ScatterChart:
 	"""Fügt ein natives Excel-XY-Diagramm rechts neben den Messdaten ein."""
-	if fit not in {"none", "linear", "quadratic", "cubic"}:
+	if fit not in {"none", "linear", "quadratic", "cubic", "exponential", "logarithmic", "power"}:
 		raise ValueError(f"Nicht unterstützte Trendlinie: {fit}")
 	for column in (spec.x_column, spec.y_column):
 		if column not in frame.columns:
@@ -129,9 +127,17 @@ def create_excel_chart(
 	x_data = x_values[valid]
 	y_data = y_values[valid]
 	if fit != "none":
-		degree = {"linear": 1, "quadratic": 2, "cubic": 3}[fit]
-		if np.unique(x_data).size <= degree:
-			raise ValueError(f"Ein Fit vom Grad {degree} benötigt mindestens {degree + 1} unterschiedliche x-Werte.")
+		if fit in {"linear", "quadratic", "cubic"}:
+			degree = {"linear": 1, "quadratic": 2, "cubic": 3}[fit]
+			if np.unique(x_data).size <= degree:
+				raise ValueError(f"Ein Fit vom Grad {degree} benötigt mindestens {degree + 1} unterschiedliche x-Werte.")
+		if fit == "exponential":
+			if np.any(y_data <= 0):
+				raise ValueError("Ein exponentieller Fit erfordert positive y-Werte.")
+		if fit in {"logarithmic", "power"} and np.any(x_data <= 0):
+			raise ValueError("Für logarithmische und Potenz-Fits müssen x-Werte positiv sein.")
+		if fit == "power" and np.any(y_data <= 0):
+			raise ValueError("Für einen Potenz-Fit müssen y-Werte positiv sein.")
 
 	x_column_index = list(frame.columns).index(spec.x_column) + 1
 	y_column_index = list(frame.columns).index(spec.y_column) + 1
@@ -158,13 +164,22 @@ def create_excel_chart(
 	if chart.scatterStyle == "marker":
 		series.graphicalProperties.line.noFill = True
 	if fit != "none":
-		degree = {"linear": 1, "quadratic": 2, "cubic": 3}[fit]
-		series.trendline = Trendline(
-			name=f"{fit.title()}er Fit",
-			trendlineType="linear" if degree == 1 else "poly",
-			order=None if degree == 1 else degree,
-			dispRSqr=True,
-		)
+		trendline_type = {
+			"linear": "linear",
+			"quadratic": "poly",
+			"cubic": "poly",
+			"exponential": "exp",
+			"logarithmic": "log",
+			"power": "power",
+		}[fit]
+		trendline_kwargs = {
+			"name": f"{fit.title()}er Fit",
+			"trendlineType": trendline_type,
+			"dispRSqr": True,
+		}
+		if fit in {"quadratic", "cubic"}:
+			trendline_kwargs["order"] = {"quadratic": 2, "cubic": 3}[fit]
+		series.trendline = Trendline(**trendline_kwargs)
 	chart.series.append(series)
 
 	error_bar_columns: list[tuple[int, Literal["x", "y"]]] = []
@@ -189,8 +204,8 @@ def create_excel_chart(
 		)
 		_append_error_bars(series, data_sheet, selected_error_bars[0], 2, data_sheet.max_row, selected_error_bars[1])
 
-	x_zero = _use_zero_origin(spec.origin, spec.x_quantity, x_data)
-	y_zero = _use_zero_origin(spec.origin, spec.y_quantity, y_data)
+	x_zero = _use_zero_origin(spec.origin, values=x_data)
+	y_zero = _use_zero_origin(spec.origin, values=y_data)
 	x_min, x_max = _axis_bounds(x_data, spec.x_min, spec.x_max, x_zero)
 	y_min, y_max = _axis_bounds(y_data, spec.y_min, spec.y_max, y_zero)
 	chart.x_axis.scaling.min = x_min

@@ -13,7 +13,6 @@ from ai import AIServiceError, analyze_with_ai, test_ai_connection
 from config import load_config, save_config
 from excel import get_numeric_columns
 from models import ChartSpecification
-from physics import identify_column, infer_chart_candidates, linear_fit
 
 
 PRODUCT_NAME = "PLVS ULTRA Graphs"
@@ -21,8 +20,8 @@ SOURCE_SHEET_NAME = "_PLVS_ULTRA_SourceSheet"
 SOURCE_ADDRESS_NAME = "_PLVS_ULTRA_SourceAddress"
 SOURCE_LABEL_NAME = "_PLVS_ULTRA_SourceLabel"
 ANALYSIS_NAME = "_PLVS_ULTRA_Analysis"
+CHART_NAME_PREFIX = "PLVS_ULTRA_Chart_"
 CHART_SHEET_NAME = "_PLVS_ULTRA_ChartSheet"
-SETTING_PREFIX = "_PLVS_ULTRA_Setting_"
 
 
 def _active_book() -> xw.Book:
@@ -100,6 +99,14 @@ def _range_key(sheet: xw.Sheet, data_range: xw.Range) -> str:
 	return f"{sheet.name.casefold()}!{str(data_range.address).replace('$', '').casefold()}"
 
 
+def _display_address(data_range: xw.Range) -> str:
+	return str(data_range.address).replace("$", "")
+
+
+def _source_label(sheet: xw.Sheet, data_range: xw.Range) -> str:
+	return f"{sheet.name}: {_display_address(data_range)}"
+
+
 def _name_item(book: xw.Book, name: str):
 	names = book.api.Names
 	for index in range(1, int(names.Count) + 1):
@@ -119,16 +126,12 @@ def _set_name(book: xw.Book, name: str, refers_to: str) -> None:
 
 
 def _set_text_name(book: xw.Book, name: str, value: str) -> None:
-	escaped = value.replace('"', '""')
-	_set_name(book, name, f'="{escaped}"')
-
-
-def _get_text_name(book: xw.Book, name: str, default: str = "") -> str:
-	item = _name_item(book, name)
-	if item is None:
-		return default
-	value = book.app.api.Evaluate(item.RefersTo)
-	return str(value) if value is not None else default
+	chunks = [
+		value[index:index + 120].replace('"', '""')
+		for index in range(0, len(value), 120)
+	] or [""]
+	refers_to = "=" + "&".join(f'"{chunk}"' for chunk in chunks)
+	_set_name(book, name, refers_to)
 
 
 def _source_from_range(
@@ -214,7 +217,7 @@ def _discover_data_sources(book: xw.Book) -> list[tuple[xw.Sheet, xw.Range, str]
 			source = _source_from_range(
 				sheet,
 				data_range,
-				f"Tabelle „{table.Name}“ — {sheet.name}!{data_range.address}",
+				_source_label(sheet, data_range),
 			)
 			if source is not None:
 				key = _range_key(sheet, data_range)
@@ -233,7 +236,7 @@ def _discover_data_sources(book: xw.Book) -> list[tuple[xw.Sheet, xw.Range, str]
 			key = _range_key(sheet, data_range)
 			if key in seen:
 				continue
-			label = f"Datenbereich — {sheet.name}!{data_range.address}"
+			label = _source_label(sheet, data_range)
 			source = _source_from_range(sheet, data_range, label)
 			if source is not None:
 				sources.append(source)
@@ -246,17 +249,13 @@ def _discover_data_sources(book: xw.Book) -> list[tuple[xw.Sheet, xw.Range, str]
 		if key in seen:
 			for index, (source_sheet, source_range, label) in enumerate(sources):
 				if _range_key(source_sheet, source_range) == key:
-					sources[index] = (
-						source_sheet,
-						source_range,
-						f"Aktueller Datenbereich — {label}",
-					)
+					sources[index] = (source_sheet, source_range, label)
 					break
 		else:
 			source = _source_from_range(
 				sheet,
 				data_range,
-				f"Aktueller Datenbereich — {sheet.name}!{data_range.address}",
+				_source_label(sheet, data_range),
 			)
 			if source is not None:
 				sources.append(source)
@@ -275,26 +274,13 @@ def _store_source(book: xw.Book, sheet: xw.Sheet, data_range: xw.Range, label: s
 	_set_text_name(book, SOURCE_SHEET_NAME, sheet.name)
 	_set_text_name(book, SOURCE_ADDRESS_NAME, data_range.address)
 	_set_text_name(book, SOURCE_LABEL_NAME, label)
-	_set_text_name(book, ANALYSIS_NAME, f"Datenquelle: {label} — Diagramm erstellen.")
-
-
-def _selected_source(book: xw.Book) -> tuple[xw.Sheet, xw.Range] | None:
-	sheet_name = _get_text_name(book, SOURCE_SHEET_NAME)
-	address = _get_text_name(book, SOURCE_ADDRESS_NAME)
-	if not sheet_name and not address:
-		return None
-	if not sheet_name or not address:
-		raise ValueError("Die gespeicherte Datenquelle ist unvollständig. Bitte erneut auswählen.")
-	if sheet_name not in book.sheet_names:
-		raise ValueError("Das Tabellenblatt der gespeicherten Datenquelle ist nicht mehr verfügbar. Bitte erneut auswählen.")
-	sheet = book.sheets[sheet_name]
-	return sheet, sheet.range(address)
+	_set_text_name(book, ANALYSIS_NAME, f"Datenbereich: {label} — Diagramm erstellen.")
 
 
 def _manual_source(book: xw.Book) -> tuple[xw.Sheet, xw.Range, str]:
 	selected = book.app.api.InputBox(
 		Prompt="Markiere den zusammenhängenden Zellbereich einschließlich Überschriften.",
-		Title=f"{PRODUCT_NAME} – Datenquelle",
+		Title=f"{PRODUCT_NAME} – Bereich",
 		Type=8,
 	)
 	if selected is False or selected is None:
@@ -305,7 +291,7 @@ def _manual_source(book: xw.Book) -> tuple[xw.Sheet, xw.Range, str]:
 		raise ValueError("Bitte einen Zellbereich aus der gerade verwendeten Arbeitsmappe auswählen.")
 	sheet = book.sheets[str(selected.Worksheet.Name)]
 	data_range = sheet.range(selected.Address)
-	label = f"Manuelle Auswahl — {sheet.name}!{data_range.address}"
+	label = _source_label(sheet, data_range)
 	source = _source_from_range(sheet, data_range, label)
 	if source is None:
 		raise ValueError("Der ausgewählte Bereich benötigt Überschriften und mindestens zwei numerische Messspalten.")
@@ -357,186 +343,110 @@ def _select_manual_source(book: xw.Book) -> tuple[xw.Sheet, xw.Range]:
 
 
 def _source_for_chart(book: xw.Book) -> tuple[xw.Sheet, xw.Range]:
-	source = _selected_source(book)
-	if source is not None:
-		return source
+	current = _current_data_range(book)
+	if current is not None:
+		sheet, data_range = current
+		label = _source_label(sheet, data_range)
+		_store_source(book, sheet, data_range, label)
+		return sheet, data_range
 	return _choose_data_source(book)
-
-
-def select_data_source() -> None:
-	def action(book: xw.Book) -> None:
-		sheet, data_range = _choose_data_source(book)
-		sheet.activate()
-		data_range.select()
-		label = _get_text_name(book, ANALYSIS_NAME)
-		_write_status(book, label or f"Datenquelle ausgewählt: {sheet.name}!{data_range.address}")
-	_safe_action(action)
-
-
-def _prompt_choice(book: xw.Book, label: str, options: list[str], default: str | None = None) -> str:
-	if not options:
-		raise ValueError(f"Keine möglichen Werte für {label} gefunden.")
-	default_text = f"\nVorschlag: {default}" if default else ""
-	prompt = f"{label}:\n" + "\n".join(f"- {option}" for option in options) + default_text
-	response = book.app.api.InputBox(prompt, PRODUCT_NAME, default or options[0], Type=2)
-	if response is False or response is None:
-		raise ValueError("Auswahl abgebrochen.")
-	choice = str(response).strip()
-	if choice not in options:
-		raise ValueError(f"Ungültige Auswahl für {label}: {choice}")
-	return choice
-
-
-def _resolve_spec(book: xw.Book, frame: pd.DataFrame, columns: list[str], allow_ai: bool) -> tuple[ChartSpecification, list]:
-	candidates = infer_chart_candidates(frame, columns)
-	selected_x = _get_text_name(book, f"{SETTING_PREFIX}X", "automatisch").strip()
-	selected_y = _get_text_name(book, f"{SETTING_PREFIX}Y", "automatisch").strip()
-	best = candidates[0] if candidates else None
-	ai_spec: ChartSpecification | None = None
-	manual_confirmation_required = False
-	if selected_x not in {"", "automatisch", "auto"} and selected_x not in columns:
-		raise ValueError(f"Die eingestellte x-Spalte {selected_x!r} ist nicht numerisch oder fehlt.")
-	if selected_y not in {"", "automatisch", "auto"} and selected_y not in columns:
-		raise ValueError(f"Die eingestellte y-Spalte {selected_y!r} ist nicht numerisch oder fehlt.")
-
-	if selected_x in columns and selected_y in columns and selected_x != selected_y:
-		x_column, y_column = selected_x, selected_y
-	elif selected_x in columns:
-		x_column = selected_x
-		possible_y = [column for column in columns if column != x_column and not identify_column(column)[2]]
-		matching_y = [candidate for candidate in candidates if candidate.x_column == x_column and candidate.y_column in possible_y]
-		if len(possible_y) == 1:
-			y_column = possible_y[0]
-		elif len(matching_y) == 1 and matching_y[0].confidence >= 0.84:
-			y_column = matching_y[0].y_column
-		else:
-			y_column = _prompt_choice(book, "Abhängige Größe wählen", possible_y, matching_y[0].y_column if matching_y else None)
-	elif selected_y in columns:
-		y_column = selected_y
-		possible_x = [column for column in columns if column != y_column and not identify_column(column)[2]]
-		matching_x = [candidate for candidate in candidates if candidate.y_column == y_column and candidate.x_column in possible_x]
-		if len(possible_x) == 1:
-			x_column = possible_x[0]
-		elif len(matching_x) == 1 and matching_x[0].confidence >= 0.84:
-			x_column = matching_x[0].x_column
-		else:
-			x_column = _prompt_choice(book, "Unabhängige Größe wählen", possible_x, matching_x[0].x_column if matching_x else None)
-	else:
-		second_confidence = candidates[1].confidence if len(candidates) > 1 else 0.0
-		is_clear = bool(best and best.confidence >= 0.84 and best.confidence - second_confidence >= 0.12)
-		ambiguous = not is_clear
-		use_ai = _get_text_name(book, f"{SETTING_PREFIX}UseAI", "Nein").strip().lower() in {"ja", "yes"}
-		if ambiguous and allow_ai and use_ai:
-			config = _get_ai_config()
-			ai_spec = analyze_with_ai(frame, columns, config)
-			if ai_spec.confidence is not None and ai_spec.confidence >= 0.9:
-				ai_spec.reason = f"KI: {ai_spec.reason}"
-				return ai_spec, candidates
-			if ai_spec.confidence is not None and ai_spec.confidence >= 0.7:
-				answer = book.app.api.MsgBox(
-					f"Die KI schlägt {ai_spec.x_label} gegen {ai_spec.y_label} vor.\n\n"
-					f"Confidence: {ai_spec.confidence:.0%}\n{ai_spec.reason}\n\n"
-					"Entscheidung mit Vorbehalt übernehmen?",
-					4 + 32,
-					PRODUCT_NAME,
-				)
-				if answer == 6:
-					ai_spec.reason = f"KI: {ai_spec.reason}"
-					return ai_spec, candidates
-				manual_confirmation_required = True
-			else:
-				book.app.api.MsgBox(
-					"Die KI konnte keine ausreichend sichere Entscheidung treffen. Bitte x- und y-Größe auswählen.",
-					48,
-					PRODUCT_NAME,
-				)
-				manual_confirmation_required = True
-		if is_clear and not manual_confirmation_required:
-			x_column, y_column = best.x_column, best.y_column
-		else:
-			possible_x = list(dict.fromkeys(candidate.x_column for candidate in candidates)) or columns
-			x_column = _prompt_choice(book, "Mehrere mögliche unabhängige Größen gefunden. X-Achse wählen", possible_x, best.x_column if best else None)
-			possible_y = [column for column in columns if column != x_column and not identify_column(column)[2]]
-			candidate_y = [candidate.y_column for candidate in candidates if candidate.x_column == x_column]
-			default_y = candidate_y[0] if candidate_y else (possible_y[0] if possible_y else None)
-			y_column = _prompt_choice(book, "Abhängige Größe wählen", possible_y, default_y)
-		if x_column == y_column:
-			raise ValueError("X- und Y-Achse müssen unterschiedliche Spalten verwenden.")
-
-	x_quantity, x_unit, _ = identify_column(x_column)
-	y_quantity, y_unit, _ = identify_column(y_column)
-	x_label = f"{x_quantity} [{x_unit}]" if x_quantity and x_unit else x_quantity or x_column
-	y_label = f"{y_quantity} [{y_unit}]" if y_quantity and y_unit else y_quantity or y_column
-	fit = _get_text_name(book, f"{SETTING_PREFIX}Fit", "auto").strip().lower()
-	if fit == "auto":
-		x_values = pd.to_numeric(frame[x_column], errors="coerce").to_numpy(dtype=float)
-		y_values = pd.to_numeric(frame[y_column], errors="coerce").to_numpy(dtype=float)
-		valid = np.isfinite(x_values) & np.isfinite(y_values)
-		fit = "none"
-		if valid.sum() >= 3 and np.unique(x_values[valid]).size >= 2:
-			if linear_fit(x_values[valid], y_values[valid])[2] >= 0.85:
-				fit = "linear"
-	error_for = {
-		identify_column(str(column))[0]: str(column)
-		for column in frame.columns
-		if identify_column(str(column))[2]
-	}
-	if fit not in {"none", "linear", "quadratic", "cubic"}:
-		raise ValueError(f"Unbekannter Trendlinientyp: {fit}")
-	selected_candidate = next(
-		(candidate for candidate in candidates if candidate.x_column == x_column and candidate.y_column == y_column),
-		None,
-	)
-	spec = ChartSpecification(
-		x_column=x_column,
-		y_column=y_column,
-		x_label=x_label,
-		y_label=y_label,
-		x_unit=x_unit,
-		y_unit=y_unit,
-		chart_type="line_scatter" if _get_text_name(book, f"{SETTING_PREFIX}ChartType", "XY-Streudiagramm").startswith("XY mit") else "scatter",
-		origin={"ja": True, "nein": False, "auto": "auto"}.get(
-			_get_text_name(book, f"{SETTING_PREFIX}Origin", "auto").strip().lower(),
-			"auto",
-		),
-		trendline=fit,
-		x_error_column=error_for.get(x_quantity),
-		y_error_column=error_for.get(y_quantity),
-		x_quantity=x_quantity,
-		y_quantity=y_quantity,
-		independent_variable=x_quantity,
-		dependent_variable=y_quantity,
-		confidence=selected_candidate.confidence if selected_candidate else None,
-		reason=(f"KI mit Confidence {ai_spec.confidence:.0%} verworfen; Auswahl durch Benutzer." if ai_spec is not None else selected_candidate.reason if selected_candidate else "Benutzer hat x- und y-Spalte ausgewählt."),
-	)
-	return spec, candidates
 
 
 def _number(value: float) -> str:
 	return f"{value:.4g}"
 
 
+def _is_price_series(spec: ChartSpecification) -> bool:
+	text = f"{spec.y_column} {spec.y_label} {spec.y_unit}".casefold()
+	if any(term in text for term in ("rendite", "return", "performance", "prozent", "%")):
+		return False
+	return any(term in text for term in (
+		"aktie", "stock", "share", "kurs", "preis", "price", "close", "schlusskurs",
+		"eur", "usd", "gbp", "chf", "€", "$", "£", "¥",
+	))
+
+
 def _analysis_label(
 	frame: pd.DataFrame,
 	spec: ChartSpecification,
 ) -> str:
+	x_label = spec.x_label.replace("|", "/")
+	y_label = spec.y_label.replace("|", "/")
+	y_unit = spec.y_unit.replace("|", "/").strip()
+	unit_suffix = f" {y_unit}" if y_unit else ""
+	independent_variable = (spec.independent_variable or x_label).replace("|", "/")
+	dependent_variable = (spec.dependent_variable or y_label).replace("|", "/")
 	x_values = pd.to_numeric(frame[spec.x_column], errors="coerce").to_numpy(dtype=float)
 	y_values = pd.to_numeric(frame[spec.y_column], errors="coerce").to_numpy(dtype=float)
 	valid = np.isfinite(x_values) & np.isfinite(y_values)
 	x_data, y_data = x_values[valid], y_values[valid]
+	fit_labels = {
+		"none": "kein",
+		"linear": "linear",
+		"quadratic": "quadratisch",
+		"cubic": "kubisch",
+		"exponential": "exponentiell",
+		"logarithmic": "logarithmisch",
+		"power": "Potenz",
+	}
+	fit_label = fit_labels.get(spec.trendline, spec.trendline)
+	chart_labels = {
+		"scatter": "Punktdiagramm (XY)",
+		"line": "Liniendiagramm",
+		"line_scatter": "Punkt- und Liniendiagramm",
+	}
+	chart_label = chart_labels.get(spec.chart_type, spec.chart_type)
+	mean_y = float(np.mean(y_data)) if y_data.size else None
+	median_y = float(np.median(y_data)) if y_data.size else None
+	min_y = float(np.min(y_data)) if y_data.size else None
+	max_y = float(np.max(y_data)) if y_data.size else None
+	std_y = float(np.std(y_data, ddof=1)) if y_data.size > 1 else None
+	correlation = None
+	if x_data.size > 1 and y_data.size > 1 and np.std(x_data) and np.std(y_data):
+		try:
+			correlation = float(np.corrcoef(x_data, y_data)[0, 1])
+		except FloatingPointError:
+			correlation = None
+		if not math.isfinite(correlation):
+			correlation = None
 	parts = [
-		f"Unabhängig: {spec.x_label}; Abhängig: {spec.y_label}",
-		(
-			f"Diagramm: {'XY mit Linie' if spec.connect_points or spec.chart_type == 'line_scatter' else 'XY'}; "
-			f"Fit: {'kein' if spec.trendline == 'none' else spec.trendline.capitalize()}"
-		),
-		(
-			f"Messpunkte: {len(y_data)}; "
-			f"Mittelwert: {_number(float(np.mean(y_data)))} {spec.y_unit}".rstrip()
-		),
+		f"Unabhängig: {x_label}; Abhängig: {y_label}",
+		f"Zusammenhang: {independent_variable} → {dependent_variable}",
+		f"Diagramm: {chart_label}; Trendlinie: {fit_label}",
+		f"Messpunkte: {len(y_data)} von {len(frame)}; Mittelwert y: "
+		f"{_number(mean_y) if mean_y is not None else 'n. v.'} {y_unit}".rstrip(),
 	]
+	statistics = []
+	if median_y is not None:
+		statistics.append(f"Median y: {_number(median_y)} {y_unit}".rstrip())
+	if min_y is not None and max_y is not None:
+		statistics.append(f"Min–Max y: {_number(min_y)}–{_number(max_y)} {y_unit}".rstrip())
+	if std_y is not None:
+		statistics.append(f"Stdabw. y: {_number(std_y)} {y_unit}".rstrip())
+	if correlation is not None:
+		statistics.append(f"Korrelation: {_number(correlation)}")
+	if statistics:
+		parts.append("Statistik: " + "; ".join(statistics))
+	if _is_price_series(spec) and x_data.size:
+		order = np.argsort(x_data, kind="stable")
+		start_value = float(y_data[order[0]])
+		end_value = float(y_data[order[-1]])
+		change = end_value - start_value
+		change_text = (
+			f"Veränderung: Kurs {_number(start_value)} → {_number(end_value)}{unit_suffix}; "
+			f"absolut {change:+.4g}{unit_suffix}"
+		)
+		if start_value != 0:
+			percent_change = change / abs(start_value) * 100
+			change_text += f"; Prozent: {percent_change:+.4g}%"
+		else:
+			change_text += "; Prozent: nicht definiert (Startwert 0)"
+		parts.append(change_text)
 	if spec.confidence is not None:
-		parts[-1] += f"; Confidence: {spec.confidence:.2f}"
+		reason = spec.reason.replace("|", "/").strip()
+		if len(reason) > 140:
+			reason = reason[:137].rstrip() + "..."
+		parts.append(f"KI-Einschätzung: {spec.confidence:.0%} — {reason}")
 	return " | ".join(parts)
 
 
@@ -544,19 +454,24 @@ def _write_analysis(
 	book: xw.Book,
 	frame: pd.DataFrame,
 	spec: ChartSpecification,
+	chart_name: str,
 ) -> None:
-	_set_text_name(book, ANALYSIS_NAME, _analysis_label(frame, spec))
+	analysis = _analysis_label(frame, spec)
+	_set_text_name(book, ANALYSIS_NAME, analysis)
+	_set_text_name(book, f"{ANALYSIS_NAME}_{chart_name}", analysis)
 
 
 def show_help() -> None:
 	def action(book: xw.Book) -> None:
 		help_text = (
 			f"{PRODUCT_NAME}\n\n"
-			"- Analysiert die ausgewählte Excel-Tabelle oder den Zellbereich.\n"
-			"- Erkennt physikalische Größen, Einheiten und potenzielle Beziehungen.\n"
-			"- Erstellt ein natives Excel-Diagramm im geöffneten Workbook.\n"
-			"- Zeigt die aktuelle Analyse direkt im Ribbon an.\n"
-			"- Die KI wird nur bei mehrdeutigen Fällen verwendet.\n"
+			"- Analysiert allgemeine Tabellen und Messdaten mit der KI.\n"
+			"- Die KI wählt Achsen, Diagrammart und einen passenden Kurvenfit.\n"
+			"- Unterstützt werden unter anderem lineare, exponentielle, logarithmische und Potenz-Trends.\n"
+			"- Eine aktive Tabelle oder ein markierter zusammenhängender Bereich wird direkt verwendet.\n"
+			"- Die Quellenauswahl erscheint nur beim Erstellen eines Diagramms, wenn keine passende Auswahl aktiv ist.\n"
+			"- Erstellt ein natives Excel-Diagramm und zeigt Analyse, Datenumfang und KI-Einschätzung im Menüband.\n"
+			"- Bei fehlender oder unsicherer KI-Diagnose wird mit einer verständlichen Meldung abgebrochen.\n"
 			"- Es werden keine Analyse- oder Hilfsblätter angelegt."
 		)
 		_message(book, help_text)
@@ -607,21 +522,9 @@ def open_ai_settings() -> None:
 		config["model"] = str(model).strip()
 		if str(api_key).strip():
 			config["api_key"] = str(api_key).strip()
-		use_ai_default = "Ja" if config["endpoint"] and config["model"] else "Nein"
-		use_ai = book.app.api.InputBox(
-			Prompt="KI bei mehrdeutigen Daten für die Analyse verwenden? Ja oder Nein:",
-			Title=f"{PRODUCT_NAME} – KI-Einstellungen",
-			Default=use_ai_default,
-			Type=2,
-		)
-		if use_ai is False:
-			return
-		if str(use_ai).strip().lower() not in {"ja", "nein", "yes", "no"}:
-			raise ValueError("Bitte für die KI-Nutzung „Ja“ oder „Nein“ eingeben.")
-		if str(use_ai).strip().lower() in {"ja", "yes"} and not (config["endpoint"] and config["model"]):
-			raise AIServiceError("Für die KI-Nutzung müssen Endpoint und Modell gesetzt sein.")
+		if not config["endpoint"] or not config["model"]:
+			raise AIServiceError("Bitte Endpoint und Modell eintragen. Die KI ist für die Diagrammanalyse erforderlich.")
 		path = save_config(config)
-		_set_text_name(book, f"{SETTING_PREFIX}UseAI", "Ja" if str(use_ai).strip().lower() in {"ja", "yes"} else "Nein")
 		_write_status(book, "KI-Einstellungen lokal gespeichert.")
 		_message(book, f"KI-Einstellungen gespeichert. Zugangsdaten liegen ausschließlich lokal: {path}")
 	_safe_action(action)
@@ -639,13 +542,24 @@ def _axis_bounds(values: np.ndarray, low: float | None, high: float | None, zero
 	return minimum, maximum
 
 
-def _remove_generated_charts(book: xw.Book) -> None:
+def _next_chart_name(book: xw.Book) -> str:
+	last_number = 0
 	for sheet in book.sheets:
 		charts = sheet.api.ChartObjects()
-		for index in range(int(charts.Count), 0, -1):
-			chart_object = charts.Item(index)
-			if str(chart_object.Name) == "PLVS_ULTRA_Chart":
-				chart_object.Delete()
+		for index in range(1, int(charts.Count) + 1):
+			name = str(charts.Item(index).Name)
+			if name.startswith(CHART_NAME_PREFIX):
+				suffix = name[len(CHART_NAME_PREFIX):]
+				if suffix.isdigit():
+					last_number = max(last_number, int(suffix))
+	for index in range(1, int(book.api.Names.Count) + 1):
+		name = str(book.api.Names.Item(index).Name).split("!")[-1]
+		analysis_prefix = f"{ANALYSIS_NAME}_{CHART_NAME_PREFIX}"
+		if name.startswith(analysis_prefix):
+			suffix = name[len(analysis_prefix):]
+			if suffix.isdigit():
+				last_number = max(last_number, int(suffix))
+	return f"{CHART_NAME_PREFIX}{last_number + 1}"
 
 
 def _add_native_chart(
@@ -654,7 +568,7 @@ def _add_native_chart(
 	data_range: xw.Range,
 	frame: pd.DataFrame,
 	spec: ChartSpecification,
-) -> None:
+) -> str:
 	x_values = pd.to_numeric(frame[spec.x_column], errors="coerce").to_numpy(dtype=float)
 	y_values = pd.to_numeric(frame[spec.y_column], errors="coerce").to_numpy(dtype=float)
 	valid = np.isfinite(x_values) & np.isfinite(y_values)
@@ -662,16 +576,26 @@ def _add_native_chart(
 		raise ValueError("Mindestens zwei gültige Messwertpaare mit verschiedenen x-Werten sind erforderlich.")
 	degree = {"linear": 1, "quadratic": 2, "cubic": 3}.get(spec.trendline)
 	if spec.trendline != "none":
-		if degree is None:
+		if spec.trendline not in {"linear", "quadratic", "cubic", "exponential", "logarithmic", "power"}:
 			raise ValueError(f"Unbekannte Trendlinie: {spec.trendline}")
-		if np.unique(x_values[valid]).size <= degree:
+		if degree is not None and np.unique(x_values[valid]).size <= degree:
 			raise ValueError(f"Ein Fit vom Grad {degree} benötigt mindestens {degree + 1} unterschiedliche x-Werte.")
-	_remove_generated_charts(book)
+		if spec.trendline == "exponential" and np.any(y_values[valid] <= 0):
+			raise ValueError("Ein exponentieller Fit erfordert positive y-Werte.")
+		if spec.trendline in {"logarithmic", "power"} and np.any(x_values[valid] <= 0):
+			raise ValueError("Ein logarithmischer oder Potenz-Fit erfordert positive x-Werte.")
+		if spec.trendline == "power" and np.any(y_values[valid] <= 0):
+			raise ValueError("Ein Potenz-Fit erfordert positive y-Werte.")
 	used = sheet.used_range.api
 	left = float(used.Left) + float(used.Width) + 24
 	top = float(used.Top)
+	existing_charts = sheet.api.ChartObjects()
+	for index in range(1, int(existing_charts.Count) + 1):
+		existing_chart = existing_charts.Item(index)
+		if str(existing_chart.Name).startswith("PLVS_ULTRA_Chart"):
+			top = max(top, float(existing_chart.Top) + float(existing_chart.Height) + 24)
 	chart_object = sheet.api.ChartObjects().Add(left, top, 500, 300)
-	chart_object.Name = "PLVS_ULTRA_Chart"
+	chart_object.Name = _next_chart_name(book)
 	chart = chart_object.Chart
 	chart.ChartType = 74 if spec.connect_points or spec.chart_type in {"line", "line_scatter"} else -4169
 	chart.HasTitle = True
@@ -690,27 +614,32 @@ def _add_native_chart(
 	series.Values = sheet.range((first_data_row, y_column), (last_data_row, y_column)).api
 	series.MarkerStyle = 8 if spec.show_points else -4142
 	chart.DisplayBlanksAs = 1
-	for axis_type, label, values, minimum, maximum, quantity in (
-		(1, spec.x_label, x_values, spec.x_min, spec.x_max, spec.x_quantity),
-		(2, spec.y_label, y_values, spec.y_min, spec.y_max, spec.y_quantity),
+	for axis_type, label, values, minimum, maximum in (
+		(1, spec.x_label, x_values, spec.x_min, spec.x_max),
+		(2, spec.y_label, y_values, spec.y_min, spec.y_max),
 	):
 		axis = chart.Axes(axis_type)
 		axis.HasTitle = True
 		axis.AxisTitle.Text = label
 		valid_values = values[np.isfinite(values)]
-		is_zero = spec.origin is True or spec.origin == "ja" or (
-			spec.origin == "auto" and quantity != "Temperatur" and valid_values.min() >= 0
-		)
+		is_zero = spec.origin is True
 		axis_minimum, axis_maximum = _axis_bounds(valid_values, minimum, maximum, is_zero)
 		axis.MinimumScale = axis_minimum
 		axis.MaximumScale = axis_maximum
 	if spec.trendline != "none":
 		trendlines = series.Trendlines()
-		if degree == 1:
-			trendlines.Add(Type=-4132, Name="Lineare Ausgleichsgerade")
+		trendline_type = {
+			"linear": -4132,
+			"exponential": -4133,
+			"logarithmic": -4134,
+			"power": -4136,
+		}
+		if spec.trendline in trendline_type:
+			trendlines.Add(Type=trendline_type[spec.trendline], Name=f"{spec.trendline.title()} Fit")
 		else:
 			trendlines.Add(Type=3, Order=degree, Name=f"Polynomfit Grad {degree}")
 	_set_text_name(book, CHART_SHEET_NAME, sheet.name)
+	return str(chart_object.Name)
 
 
 def create_chart() -> None:
@@ -719,11 +648,12 @@ def create_chart() -> None:
 		frame = _frame_from_range(data_range)
 		columns = get_numeric_columns(frame)
 		if len(columns) < 2:
-			raise ValueError("Die ausgewählte Datenquelle benötigt mindestens zwei numerische Messspalten.")
-		spec, _ = _resolve_spec(book, frame, columns, allow_ai=True)
-		_add_native_chart(book, data_sheet, data_range, frame, spec)
-		_write_analysis(book, frame, spec)
+			raise ValueError("Der ausgewählte Bereich benötigt mindestens zwei numerische Messspalten.")
+		spec = analyze_with_ai(frame, columns, _get_ai_config())
+		chart_name = _add_native_chart(book, data_sheet, data_range, frame, spec)
+		_write_analysis(book, frame, spec, chart_name)
 		data_sheet.activate()
+		data_sheet.api.ChartObjects(chart_name).Activate()
 		message = f"Diagramm und Analyse erstellt: {spec.x_label} gegen {spec.y_label}."
 		_write_status(book, message)
 		_message(book, message)

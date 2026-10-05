@@ -5,23 +5,32 @@
       <tab id="PLVSULTRAGraphsTab" label="PLVS ULTRA Graphs">
         <group id="PLVSDiagramGroup" label="Diagramm">
           <button id="PLVSCreateChart" label="Diagramm erstellen" size="large" imageMso="ChartInsert" onAction="PLVS_RibbonCreateChart"/>
-          <button id="PLVSSelectDataSource" label="Datenquelle auswählen" size="large" imageMso="TableSelect" onAction="PLVS_RibbonSelectDataSource"/>
         </group>
         <group id="PLVSAIGroup" label="KI">
           <button id="PLVSAISettings" label="KI-Einstellungen" size="large" imageMso="AdvancedFileProperties" onAction="PLVS_RibbonAISettings"/>
           <button id="PLVSTestAI" label="KI testen" size="large" imageMso="RefreshAll" onAction="PLVS_RibbonTestAI"/>
-        </group>
-        <group id="PLVSAnalysisGroup" label="Analyse">
-          <box id="PLVSAnalysisBox" boxStyle="vertical">
-            <labelControl id="PLVSAnalysisAxes" getLabel="PLVS_RibbonGetAnalysis"/>
-            <labelControl id="PLVSAnalysisChartFit" getLabel="PLVS_RibbonGetAnalysis"/>
-            <labelControl id="PLVSAnalysisMetrics" getLabel="PLVS_RibbonGetAnalysis"/>
-          </box>
         </group>
         <group id="PLVSUtilityGroup" label="Sonstiges">
           <button id="PLVSHelp" label="Hilfe" size="large" imageMso="Help" onAction="PLVS_RibbonHelp"/>
         </group>
       </tab>
     </tabs>
+    <contextualTabs>
+      <tabSet idMso="TabSetChartTools">
+        <tab idMso="TabChartDesign">
+          <group id="PLVSAnalysisGroup" label="Analyse">
+            <box id="PLVSAnalysisBox" boxStyle="vertical">
+              <labelControl id="PLVSAnalysisAxes" getLabel="PLVS_RibbonGetAnalysis"/>
+              <labelControl id="PLVSAnalysisRelationship" getLabel="PLVS_RibbonGetAnalysis"/>
+              <labelControl id="PLVSAnalysisChartFit" getLabel="PLVS_RibbonGetAnalysis"/>
+              <labelControl id="PLVSAnalysisMetrics" getLabel="PLVS_RibbonGetAnalysis"/>
+              <labelControl id="PLVSAnalysisStatistics" getLabel="PLVS_RibbonGetAnalysis"/>
+              <labelControl id="PLVSAnalysisChange" getLabel="PLVS_RibbonGetAnalysis"/>
+              <labelControl id="PLVSAnalysisAI" getLabel="PLVS_RibbonGetAnalysis"/>
+            </box>
+          </group>
+        </tab>
+      </tabSet>
+    </contextualTabs>
   </ribbon>
 </customUI>
