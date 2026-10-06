@@ -9,7 +9,7 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 from openpyxl import Workbook, load_workbook as load_openpyxl_workbook
-from openpyxl.chart import Reference, ScatterChart, Series
+from openpyxl.chart import BarChart, LineChart, Reference, ScatterChart, Series
 from openpyxl.chart.error_bar import ErrorBars
 from openpyxl.chart.series import Series as ChartSeries
 from openpyxl.chart.trendline import Trendline
@@ -111,24 +111,45 @@ def create_excel_chart(
 	frame: pd.DataFrame,
 	spec: ChartSpecification,
 	fit: str = "none",
-) -> ScatterChart:
-	"""Fügt ein natives Excel-XY-Diagramm rechts neben den Messdaten ein."""
-	if fit not in {"none", "linear", "quadratic", "cubic", "exponential", "logarithmic", "power"}:
+) -> BarChart | LineChart | ScatterChart:
+	"""Fügt ein natives Excel-Diagramm rechts neben den Messdaten ein."""
+	if fit not in {"none", "linear", "quadratic", "cubic", "polynomial", "exponential", "logarithmic", "power", "moving_average"}:
 		raise ValueError(f"Nicht unterstützte Trendlinie: {fit}")
+	if spec.chart_type not in {"scatter", "scatter_lines", "line", "line_scatter", "bar", "column"}:
+		raise ValueError(f"Nicht unterstützte Diagrammart: {spec.chart_type}")
 	for column in (spec.x_column, spec.y_column):
 		if column not in frame.columns:
 			raise ValueError(f"Diagrammspalte {column!r} fehlt in der Tabelle.")
 
 	x_values = pd.to_numeric(frame[spec.x_column], errors="coerce").to_numpy(dtype=float)
 	y_values = pd.to_numeric(frame[spec.y_column], errors="coerce").to_numpy(dtype=float)
-	valid = np.isfinite(x_values) & np.isfinite(y_values)
-	if valid.sum() < 2 or np.unique(x_values[valid]).size < 2:
-		raise ValueError("Für ein XY-Diagramm werden mindestens zwei gültige Messwertpaare mit unterschiedlichen x-Werten benötigt.")
-	x_data = x_values[valid]
+	y_valid = np.isfinite(y_values)
+	categorical_chart = spec.chart_type in {"bar", "column", "line", "line_scatter"} or not np.any(np.isfinite(x_values))
+	if categorical_chart:
+		if spec.chart_type in {"scatter", "scatter_lines"}:
+			raise ValueError("Ein Scatter-/XY-Diagramm benötigt eine numerische x-Spalte.")
+		x_categories = frame[spec.x_column]
+		valid = x_categories.notna().to_numpy() & y_valid
+		if int(valid.sum()) < 2:
+			raise ValueError("Für ein Diagramm werden mindestens zwei gültige Datenpaare benötigt.")
+		category_codes = pd.factorize(x_categories, sort=False)[0].astype(float) + 1
+		x_data = category_codes[valid]
+	else:
+		valid = np.isfinite(x_values) & y_valid
+		if valid.sum() < 2 or np.unique(x_values[valid]).size < 2:
+			raise ValueError("Für ein XY-Diagramm werden mindestens zwei gültige Messwertpaare mit unterschiedlichen x-Werten benötigt.")
+		x_data = x_values[valid]
 	y_data = y_values[valid]
 	if fit != "none":
-		if fit in {"linear", "quadratic", "cubic"}:
-			degree = {"linear": 1, "quadratic": 2, "cubic": 3}[fit]
+		if fit in {"linear", "quadratic", "cubic", "polynomial"}:
+			degree = (
+				1 if fit == "linear"
+				else 2 if fit == "quadratic"
+				else 3 if fit == "cubic"
+				else spec.polynomial_degree
+			)
+			if fit == "polynomial" and not 2 <= degree <= 6:
+				raise ValueError("Der Polynomgrad muss zwischen 2 und 6 liegen.")
 			if np.unique(x_data).size <= degree:
 				raise ValueError(f"Ein Fit vom Grad {degree} benötigt mindestens {degree + 1} unterschiedliche x-Werte.")
 		if fit == "exponential":
@@ -138,19 +159,46 @@ def create_excel_chart(
 			raise ValueError("Für logarithmische und Potenz-Fits müssen x-Werte positiv sein.")
 		if fit == "power" and np.any(y_data <= 0):
 			raise ValueError("Für einen Potenz-Fit müssen y-Werte positiv sein.")
+		if fit == "moving_average":
+			if spec.moving_average_period not in {2, 3, 4, 5, 6, 7, 10, 12, 20}:
+				raise ValueError("Die Periode des gleitenden Durchschnitts ist ungültig.")
+			if spec.moving_average_period >= len(y_data):
+				raise ValueError(
+					"Der gleitende Durchschnitt benötigt mehr Messpunkte als die gewählte Periode."
+				)
 
 	x_column_index = list(frame.columns).index(spec.x_column) + 1
 	y_column_index = list(frame.columns).index(spec.y_column) + 1
 	x_reference = Reference(data_sheet, min_col=x_column_index, min_row=2, max_row=data_sheet.max_row)
 	y_reference = Reference(data_sheet, min_col=y_column_index, min_row=2, max_row=data_sheet.max_row)
-	chart = ScatterChart()
-	if spec.chart_type == "scatter":
-		chart.scatterStyle = "marker" if spec.show_points else "line"
+	if spec.chart_type in {"bar", "column"}:
+		chart = BarChart()
+		chart.type = "bar" if spec.chart_type == "bar" else "col"
+		chart.grouping = "clustered"
+		chart.add_data(y_reference, titles_from_data=False)
+		chart.set_categories(x_reference)
+		series = chart.series[0]
+	elif spec.chart_type in {"line", "line_scatter"} or categorical_chart:
+		chart = LineChart()
+		chart.add_data(y_reference, titles_from_data=False)
+		chart.set_categories(x_reference)
+		series = chart.series[0]
 	else:
-		chart.scatterStyle = "lineMarker" if spec.show_points else "line"
+		chart = ScatterChart()
+		connect = spec.connect_points or spec.chart_type == "scatter_lines"
+		chart.scatterStyle = (
+			"lineMarker" if connect and spec.show_points
+			else "line" if connect
+			else "marker"
+		)
+		series = Series(y_reference, x_reference, title="Messwerte")
 	chart.title = f"{spec.y_label} in Abhängigkeit von {spec.x_label}"
-	chart.x_axis.title = _axis_label(spec.x_label, spec.x_unit)
-	chart.y_axis.title = _axis_label(spec.y_label, spec.y_unit)
+	if isinstance(chart, BarChart) and chart.type == "bar":
+		chart.x_axis.title = _axis_label(spec.y_label, spec.y_unit)
+		chart.y_axis.title = _axis_label(spec.x_label, spec.x_unit)
+	else:
+		chart.x_axis.title = _axis_label(spec.x_label, spec.x_unit)
+		chart.y_axis.title = _axis_label(spec.y_label, spec.y_unit)
 	chart.style = 13
 	chart.width = 18
 	chart.height = 10
@@ -158,29 +206,42 @@ def create_excel_chart(
 	chart.display_blanks = "gap"
 	chart.visible_cells_only = False
 
-	series = Series(y_reference, x_reference, title="Messwerte")
-	series.marker.symbol = "circle"
-	series.marker.size = 7
-	if chart.scatterStyle == "marker":
+	if spec.chart_type in {"scatter", "scatter_lines", "line_scatter"} and spec.show_points:
+		series.marker.symbol = "circle"
+		series.marker.size = 7
+	elif spec.chart_type in {"line", "scatter", "scatter_lines", "line_scatter"}:
+		series.marker.symbol = "none"
+	if isinstance(chart, ScatterChart) and not (
+		spec.connect_points or spec.chart_type == "scatter_lines"
+	):
 		series.graphicalProperties.line.noFill = True
 	if fit != "none":
 		trendline_type = {
 			"linear": "linear",
 			"quadratic": "poly",
 			"cubic": "poly",
+			"polynomial": "poly",
 			"exponential": "exp",
 			"logarithmic": "log",
 			"power": "power",
+			"moving_average": "movingAvg",
 		}[fit]
 		trendline_kwargs = {
-			"name": f"{fit.title()}er Fit",
+			"name": f"{fit.title()} Fit",
 			"trendlineType": trendline_type,
 			"dispRSqr": True,
 		}
-		if fit in {"quadratic", "cubic"}:
-			trendline_kwargs["order"] = {"quadratic": 2, "cubic": 3}[fit]
+		if fit in {"quadratic", "cubic", "polynomial"}:
+			trendline_kwargs["order"] = (
+				2 if fit == "quadratic"
+				else 3 if fit == "cubic"
+				else spec.polynomial_degree
+			)
+		elif fit == "moving_average":
+			trendline_kwargs["period"] = spec.moving_average_period
 		series.trendline = Trendline(**trendline_kwargs)
-	chart.series.append(series)
+	if isinstance(chart, ScatterChart):
+		chart.series.append(series)
 
 	error_bar_columns: list[tuple[int, Literal["x", "y"]]] = []
 	for error_column, direction in (
@@ -204,14 +265,22 @@ def create_excel_chart(
 		)
 		_append_error_bars(series, data_sheet, selected_error_bars[0], 2, data_sheet.max_row, selected_error_bars[1])
 
-	x_zero = _use_zero_origin(spec.origin, values=x_data)
 	y_zero = _use_zero_origin(spec.origin, values=y_data)
-	x_min, x_max = _axis_bounds(x_data, spec.x_min, spec.x_max, x_zero)
 	y_min, y_max = _axis_bounds(y_data, spec.y_min, spec.y_max, y_zero)
-	chart.x_axis.scaling.min = x_min
-	chart.x_axis.scaling.max = x_max
-	chart.y_axis.scaling.min = y_min
-	chart.y_axis.scaling.max = y_max
+	if isinstance(chart, BarChart) and chart.type == "bar":
+		chart.x_axis.scaling.min = y_min
+		chart.x_axis.scaling.max = y_max
+	elif isinstance(chart, BarChart):
+		chart.y_axis.scaling.min = y_min
+		chart.y_axis.scaling.max = y_max
+	else:
+		chart.y_axis.scaling.min = y_min
+		chart.y_axis.scaling.max = y_max
+		if not categorical_chart:
+			x_zero = _use_zero_origin(spec.origin, values=x_data)
+			x_min, x_max = _axis_bounds(x_data, spec.x_min, spec.x_max, x_zero)
+			chart.x_axis.scaling.min = x_min
+			chart.x_axis.scaling.max = x_max
 
 	data_sheet.add_chart(chart, f"{get_column_letter(data_sheet.max_column + 2)}2")
 	return chart

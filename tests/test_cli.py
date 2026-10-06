@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -59,6 +61,44 @@ class CLITests(unittest.TestCase):
 			):
 				self.assertEqual(main.main([str(path)]), 2)
 			save_chart.assert_not_called()
+
+	def test_cli_reanalyzes_after_ai_user_input(self) -> None:
+		with tempfile.TemporaryDirectory() as folder:
+			path = self._workbook(folder, ["Week", "Active users"])
+			provisional = ChartSpecification(
+				needs_user_input=True,
+				user_input_options=[
+					{
+						"type": "x_column",
+						"question": "Welche Spalte soll X sein?",
+						"options": ["Week", "Active users"],
+					}
+				],
+			)
+			final = self._spec()
+			config = {"endpoint": "http://localhost", "api_key": "", "model": "test"}
+			with (
+				patch("main.load_config", return_value=config),
+				patch("main.analyze_with_ai", return_value=provisional) as analyze,
+				patch("main.reanalyze_with_user_input", return_value=final) as reanalyze,
+				patch("builtins.input", return_value="Week"),
+				patch("main.save_workbook_with_chart") as save_chart,
+				redirect_stdout(StringIO()),
+			):
+				self.assertEqual(main.main([str(path)]), 0)
+
+			analyze.assert_called_once()
+			self.assertEqual(
+				reanalyze.call_args.args[1:],
+				(
+					analyze.call_args.args[1],
+					config,
+					provisional,
+					{"x_column": "Week"},
+				),
+			)
+			save_chart.assert_called_once()
+			self.assertIs(save_chart.call_args.args[3], final)
 
 	def test_cli_does_not_accept_local_axis_or_fit_overrides(self) -> None:
 		with tempfile.TemporaryDirectory() as folder:

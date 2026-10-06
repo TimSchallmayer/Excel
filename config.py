@@ -51,9 +51,14 @@ def save_config(config: AIConfig, path: Path | None = None) -> Path:
 		if not isinstance(value, str):
 			raise ValueError(f"Der Konfigurationswert {key} muss Text sein.")
 		validated[key] = value.strip()
-	with NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False, suffix=".tmp") as temporary:
-		json.dump(validated, temporary, ensure_ascii=False, indent=2)
-		temporary.write("\n")
-		temporary_path = Path(temporary.name)
-	temporary_path.replace(path)
+	temporary_path: Path | None = None
+	try:
+		with NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False, suffix=".tmp") as temporary:
+			temporary_path = Path(temporary.name)
+			json.dump(validated, temporary, ensure_ascii=False, indent=2)
+			temporary.write("\n")
+		temporary_path.replace(path)
+	finally:
+		if temporary_path is not None:
+			temporary_path.unlink(missing_ok=True)
 	return path

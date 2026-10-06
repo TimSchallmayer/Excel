@@ -5,6 +5,124 @@
       <tab id="PLVSULTRAGraphsTab" label="PLVS ULTRA Graphs">
         <group id="PLVSDiagramGroup" label="Diagramm">
           <button id="PLVSCreateChart" label="Diagramm erstellen" size="large" imageMso="ChartInsert" onAction="PLVS_RibbonCreateChart"/>
+          <dropDown id="PLVSPendingChoice" label="Auswahl anklicken" getVisible="PLVS_RibbonGetPendingVisible" getItemCount="PLVS_RibbonGetPendingItemCount" getItemLabel="PLVS_RibbonGetPendingItemLabel" getItemID="PLVS_RibbonGetPendingItemId" onAction="PLVS_RibbonChoosePendingChoice"/>
+        </group>
+        <group id="PLVSAxesGroup" label="Achsen">
+          <button id="PLVSSwapAxes" label="X/Y tauschen" size="large" imageMso="ChartSwitchRowColumn" getEnabled="PLVS_RibbonGetEditEnabled" onAction="PLVS_RibbonSwapAxes"/>
+          <button id="PLVSEditXAxisTitle" label="X-Achse" imageMso="ChartAxisTitles" getEnabled="PLVS_RibbonGetEditEnabled" onAction="PLVS_RibbonEditXAxisTitle"/>
+          <button id="PLVSEditYAxisTitle" label="Y-Achse" imageMso="ChartAxisTitles" getEnabled="PLVS_RibbonGetEditEnabled" onAction="PLVS_RibbonEditYAxisTitle"/>
+        </group>
+        <group id="PLVSChartOptionsGroup" label="Diagramm">
+          <dropDown id="PLVSChangeChartType" label="Typ" imageMso="ChartChangeType" getEnabled="PLVS_RibbonGetEditEnabled" getSelectedItemIndex="PLVS_RibbonGetSelectedItemIndex" onAction="PLVS_RibbonChangeChartType">
+            <item id="PLVSChartScatter" label="Punkt (XY)"/>
+            <item id="PLVSChartScatterLines" label="Punkt (XY) mit Linien"/>
+            <item id="PLVSChartLine" label="Linie"/>
+            <item id="PLVSChartLineScatter" label="Linie mit Punkten"/>
+            <item id="PLVSChartBar" label="Balken"/>
+            <item id="PLVSChartColumn" label="Säule"/>
+          </dropDown>
+          <toggleButton id="PLVSToggleTitle" label="Titel" imageMso="ChartTitle" getEnabled="PLVS_RibbonGetEditEnabled" getPressed="PLVS_RibbonGetEditPressed" onAction="PLVS_RibbonToggleTitle" size="normal"/>
+          <button id="PLVSEditTitle" label="Titeltext" imageMso="EditText" getEnabled="PLVS_RibbonGetEditEnabled" onAction="PLVS_RibbonEditTitle"/>
+          <toggleButton id="PLVSToggleLegend" label="Legende" imageMso="ChartLegend" getEnabled="PLVS_RibbonGetEditEnabled" getPressed="PLVS_RibbonGetEditPressed" onAction="PLVS_RibbonToggleLegend"/>
+          <toggleButton id="PLVSToggleGridlines" label="Gitternetz" imageMso="ChartGridlines" getEnabled="PLVS_RibbonGetEditEnabled" getPressed="PLVS_RibbonGetEditPressed" onAction="PLVS_RibbonToggleGridlines"/>
+        </group>
+        <group id="PLVSChartAppearanceGroup" label="Darstellung">
+          <dropDown id="PLVSSeriesColor" label="Datenreihe" imageMso="ShapeFillColorPicker" getEnabled="PLVS_RibbonGetEditEnabled" getSelectedItemIndex="PLVS_RibbonGetSelectedItemIndex" onAction="PLVS_RibbonSeriesColor">
+            <item id="PLVSSeriesBlue" label="Blau"/>
+            <item id="PLVSSeriesOrange" label="Orange"/>
+            <item id="PLVSSeriesGray" label="Grau"/>
+            <item id="PLVSSeriesGold" label="Gold"/>
+            <item id="PLVSSeriesLightBlue" label="Hellblau"/>
+            <item id="PLVSSeriesGreen" label="Grün"/>
+            <item id="PLVSSeriesNavy" label="Dunkelblau"/>
+            <item id="PLVSSeriesRed" label="Rot"/>
+            <item id="PLVSSeriesPurple" label="Violett"/>
+            <item id="PLVSSeriesBlack" label="Schwarz"/>
+          </dropDown>
+          <dropDown id="PLVSLineColor" label="Linie" imageMso="ShapeOutlineColorPicker" getEnabled="PLVS_RibbonGetEditEnabled" getSelectedItemIndex="PLVS_RibbonGetSelectedItemIndex" onAction="PLVS_RibbonLineColor">
+            <item id="PLVSLineBlue" label="Blau"/>
+            <item id="PLVSLineOrange" label="Orange"/>
+            <item id="PLVSLineGray" label="Grau"/>
+            <item id="PLVSLineGold" label="Gold"/>
+            <item id="PLVSLineLightBlue" label="Hellblau"/>
+            <item id="PLVSLineGreen" label="Grün"/>
+            <item id="PLVSLineNavy" label="Dunkelblau"/>
+            <item id="PLVSLineRed" label="Rot"/>
+            <item id="PLVSLinePurple" label="Violett"/>
+            <item id="PLVSLineBlack" label="Schwarz"/>
+          </dropDown>
+          <dropDown id="PLVSLineWidth" label="Linienbreite" imageMso="LineWeightGallery" getEnabled="PLVS_RibbonGetEditEnabled" getSelectedItemIndex="PLVS_RibbonGetSelectedItemIndex" onAction="PLVS_RibbonLineWidth">
+            <item id="PLVSLineWidth075" label="0,75 pt"/>
+            <item id="PLVSLineWidth1" label="1 pt"/>
+            <item id="PLVSLineWidth15" label="1,5 pt"/>
+            <item id="PLVSLineWidth2" label="2 pt"/>
+            <item id="PLVSLineWidth3" label="3 pt"/>
+          </dropDown>
+          <dropDown id="PLVSPointSize" label="Punktgröße" imageMso="LineWeightGallery" getEnabled="PLVS_RibbonGetEditEnabled" getSelectedItemIndex="PLVS_RibbonGetSelectedItemIndex" onAction="PLVS_RibbonPointSize">
+            <item id="PLVSPointSize3" label="3 pt"/>
+            <item id="PLVSPointSize5" label="5 pt"/>
+            <item id="PLVSPointSize7" label="7 pt"/>
+            <item id="PLVSPointSize9" label="9 pt"/>
+            <item id="PLVSPointSize11" label="11 pt"/>
+          </dropDown>
+          <toggleButton id="PLVSTogglePoints" label="Punkte" imageMso="ChartDataLabel" getEnabled="PLVS_RibbonGetEditEnabled" getPressed="PLVS_RibbonGetEditPressed" onAction="PLVS_RibbonTogglePoints"/>
+          <toggleButton id="PLVSToggleConnections" label="Linien verbinden" imageMso="ChartLines" getEnabled="PLVS_RibbonGetEditEnabled" getPressed="PLVS_RibbonGetEditPressed" onAction="PLVS_RibbonToggleConnections"/>
+        </group>
+        <group id="PLVSTrendlineGroup" label="Trendlinie">
+          <dropDown id="PLVSChangeTrendline" label="Trendlinie" imageMso="ChartTrendline" getEnabled="PLVS_RibbonGetEditEnabled" getItemCount="PLVS_RibbonGetTrendlineCount" getItemLabel="PLVS_RibbonGetTrendlineLabel" getItemID="PLVS_RibbonGetTrendlineId" getSelectedItemIndex="PLVS_RibbonGetTrendlineSelectedIndex" onAction="PLVS_RibbonChangeTrendline">
+          </dropDown>
+          <dropDown id="PLVSPolynomialDegree" label="Polynomgrad" imageMso="ChartTrendline" getVisible="PLVS_RibbonGetTrendlineOptionVisible" getEnabled="PLVS_RibbonGetEditEnabled" getItemCount="PLVS_RibbonGetPolynomialDegreeCount" getItemLabel="PLVS_RibbonGetPolynomialDegreeLabel" getItemID="PLVS_RibbonGetPolynomialDegreeId" getSelectedItemIndex="PLVS_RibbonGetPolynomialDegreeSelectedIndex" onAction="PLVS_RibbonChangePolynomialDegree">
+          </dropDown>
+          <dropDown id="PLVSMovingAveragePeriod" label="Periode" imageMso="ChartTrendline" getVisible="PLVS_RibbonGetTrendlineOptionVisible" getEnabled="PLVS_RibbonGetEditEnabled" getItemCount="PLVS_RibbonGetMovingAveragePeriodCount" getItemLabel="PLVS_RibbonGetMovingAveragePeriodLabel" getItemID="PLVS_RibbonGetMovingAveragePeriodId" getSelectedItemIndex="PLVS_RibbonGetMovingAveragePeriodSelectedIndex" onAction="PLVS_RibbonChangeMovingAveragePeriod">
+          </dropDown>
+        </group>
+        <group id="PLVSTextGroup" label="Text">
+          <dropDown id="PLVSTextTarget" label="Element" imageMso="EditText" getEnabled="PLVS_RibbonGetEditEnabled" getSelectedItemIndex="PLVS_RibbonGetTextTarget" onAction="PLVS_RibbonTextTarget">
+            <item id="PLVSTextTitle" label="Diagrammtitel"/>
+            <item id="PLVSTextXAxis" label="X-Achsentitel"/>
+            <item id="PLVSTextYAxis" label="Y-Achsentitel"/>
+            <item id="PLVSTextLegend" label="Legende"/>
+          </dropDown>
+          <dropDown id="PLVSFontName" label="Schriftart" imageMso="Font" getEnabled="PLVS_RibbonGetEditEnabled" getSelectedItemIndex="PLVS_RibbonGetSelectedItemIndex" onAction="PLVS_RibbonFontName">
+            <item id="PLVSFontAptos" label="Aptos"/>
+            <item id="PLVSFontArial" label="Arial"/>
+            <item id="PLVSFontCalibri" label="Calibri"/>
+            <item id="PLVSFontTimesNewRoman" label="Times New Roman"/>
+            <item id="PLVSFontCambria" label="Cambria"/>
+            <item id="PLVSFontVerdana" label="Verdana"/>
+            <item id="PLVSFontTahoma" label="Tahoma"/>
+            <item id="PLVSFontGeorgia" label="Georgia"/>
+            <item id="PLVSFontTrebuchetMS" label="Trebuchet MS"/>
+            <item id="PLVSFontCourierNew" label="Courier New"/>
+            <item id="PLVSFontConsolas" label="Consolas"/>
+            <item id="PLVSFontSegoeUI" label="Segoe UI"/>
+          </dropDown>
+          <dropDown id="PLVSFontSize" label="Größe" imageMso="FontSize" getEnabled="PLVS_RibbonGetEditEnabled" getSelectedItemIndex="PLVS_RibbonGetSelectedItemIndex" onAction="PLVS_RibbonFontSize">
+            <item id="PLVSFontSize8" label="8 pt"/>
+            <item id="PLVSFontSize9" label="9 pt"/>
+            <item id="PLVSFontSize10" label="10 pt"/>
+            <item id="PLVSFontSize11" label="11 pt"/>
+            <item id="PLVSFontSize12" label="12 pt"/>
+            <item id="PLVSFontSize14" label="14 pt"/>
+            <item id="PLVSFontSize16" label="16 pt"/>
+            <item id="PLVSFontSize18" label="18 pt"/>
+            <item id="PLVSFontSize20" label="20 pt"/>
+            <item id="PLVSFontSize24" label="24 pt"/>
+          </dropDown>
+          <toggleButton id="PLVSFontBold" label="Fett" imageMso="Bold" getEnabled="PLVS_RibbonGetEditEnabled" getPressed="PLVS_RibbonGetTextStyle" onAction="PLVS_RibbonToggleBold"/>
+          <toggleButton id="PLVSFontItalic" label="Kursiv" imageMso="Italic" getEnabled="PLVS_RibbonGetEditEnabled" getPressed="PLVS_RibbonGetTextStyle" onAction="PLVS_RibbonToggleItalic"/>
+          <dropDown id="PLVSFontColor" label="Schriftfarbe" imageMso="FontColorPicker" getEnabled="PLVS_RibbonGetEditEnabled" getSelectedItemIndex="PLVS_RibbonGetSelectedItemIndex" onAction="PLVS_RibbonFontColor">
+            <item id="PLVSFontColorBlue" label="Blau"/>
+            <item id="PLVSFontColorOrange" label="Orange"/>
+            <item id="PLVSFontColorGray" label="Grau"/>
+            <item id="PLVSFontColorGold" label="Gold"/>
+            <item id="PLVSFontColorLightBlue" label="Hellblau"/>
+            <item id="PLVSFontColorGreen" label="Grün"/>
+            <item id="PLVSFontColorNavy" label="Dunkelblau"/>
+            <item id="PLVSFontColorRed" label="Rot"/>
+            <item id="PLVSFontColorPurple" label="Violett"/>
+            <item id="PLVSFontColorBlack" label="Schwarz"/>
+          </dropDown>
         </group>
         <group id="PLVSAIGroup" label="KI">
           <button id="PLVSAISettings" label="KI-Einstellungen" size="large" imageMso="AdvancedFileProperties" onAction="PLVS_RibbonAISettings"/>

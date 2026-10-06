@@ -16,6 +16,7 @@ Public Sub Connect(ByVal chart As Chart)
 End Sub
 
 Private Sub PLVS_Chart_Activate()
+    PLVS_RecordActiveChart PLVS_Chart
     PLVS_RefreshAnalysis
 End Sub
 
