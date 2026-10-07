@@ -937,6 +937,43 @@ def _chart_type_code(
 	raise ValueError(f"Unbekannte Diagrammart: {chart_type}")
 
 
+def _gridline_axis_types(chart_type: int, x_is_numeric: bool) -> tuple[int, ...]:
+	if chart_type in {-4169, 65, 74, 75}:
+		return (1, 2)
+	if chart_type == 4:
+		return (1, 2) if x_is_numeric else (2,)
+	if chart_type in {51, 57}:
+		# The category-axis gridlines rotate with the bar/column chart orientation.
+		return (1,)
+	raise ValueError(f"Gitternetzlinien für den Excel-Diagrammtyp {chart_type} werden nicht unterstützt.")
+
+
+def _set_chart_gridlines(chart: Any, enabled: bool, x_is_numeric: bool) -> None:
+	chart_type = int(chart.ChartType)
+	axes = {axis_type: chart.Axes(axis_type) for axis_type in (1, 2)}
+	for axis in axes.values():
+		axis.HasMajorGridlines = False
+		axis.HasMinorGridlines = False
+	if enabled:
+		for axis_type in _gridline_axis_types(chart_type, x_is_numeric):
+			axes[axis_type].HasMajorGridlines = True
+
+	expected_major_axes = set(_gridline_axis_types(chart_type, x_is_numeric)) if enabled else set()
+	actual_major_axes = {
+		axis_type
+		for axis_type, axis in axes.items()
+		if bool(axis.HasMajorGridlines)
+	}
+	if actual_major_axes != expected_major_axes or any(
+		bool(axis.HasMinorGridlines) for axis in axes.values()
+	):
+		raise RuntimeError("Excel hat den gewünschten Gitternetzlinienzustand nicht übernommen.")
+
+
+def _set_creation_gridlines(chart: Any, x_is_numeric: bool) -> None:
+	_set_chart_gridlines(chart, True, x_is_numeric)
+
+
 def _set_axis_title(
 	chart: Any,
 	spec: ChartSpecification,
@@ -1300,6 +1337,13 @@ def _swap_chart_axes(
 	state_settings["title"] = str(chart.ChartTitle.Text)
 	_set_axis_title(chart, spec, frame, "x")
 	_set_axis_title(chart, spec, frame, "y")
+	if isinstance(state_settings.get("gridlines_enabled"), bool):
+		x_values = pd.to_numeric(frame[spec.x_column], errors="coerce").to_numpy(dtype=float)
+		_set_chart_gridlines(
+			chart,
+			state_settings["gridlines_enabled"],
+			bool(np.any(np.isfinite(x_values))),
+		)
 	_write_analysis(book, frame, spec, chart_name)
 	_save_chart_state(
 		book,
@@ -1406,6 +1450,8 @@ def _edit_chart_settings(
 		chart.ChartType = target_chart_type
 		if int(chart.ChartType) != target_chart_type:
 			raise RuntimeError("Excel hat den Diagrammtyp nach der Formatübernahme zurückgesetzt.")
+		if isinstance(settings.get("gridlines_enabled"), bool):
+			_set_chart_gridlines(chart, settings["gridlines_enabled"], bool(np.any(np.isfinite(x_values))))
 	elif action in {"series_color", "line_color"}:
 		rgb = _selected_color(value if isinstance(value, int) else None)
 		native_type = int(chart.ChartType)
@@ -1589,9 +1635,16 @@ def _edit_chart_settings(
 			raise RuntimeError("Excel hat die Legendenumschaltung nicht übernommen.")
 		settings["legend"] = expected_legend
 	elif action == "gridlines":
-		axis = chart.Axes(2)
-		axis.HasMajorGridlines = not bool(axis.HasMajorGridlines)
-		settings["gridlines"] = bool(axis.HasMajorGridlines)
+		gridlines_visible = any(
+			bool(getattr(chart.Axes(axis_type), property_name))
+			for axis_type in (1, 2)
+			for property_name in ("HasMajorGridlines", "HasMinorGridlines")
+		)
+		gridlines_enabled = not gridlines_visible
+		x_values = pd.to_numeric(frame[spec.x_column], errors="coerce").to_numpy(dtype=float)
+		_set_chart_gridlines(chart, gridlines_enabled, bool(np.any(np.isfinite(x_values))))
+		settings.pop("gridlines", None)
+		settings["gridlines_enabled"] = gridlines_enabled
 	elif action == "text_target":
 		settings["text_target"] = _selection(
 			value if isinstance(value, int) else None,
@@ -2004,6 +2057,7 @@ def _add_native_chart(
 		axis_minimum, axis_maximum = _axis_bounds(valid_values, minimum, maximum, is_zero)
 		axis.MinimumScale = axis_minimum
 		axis.MaximumScale = axis_maximum
+	_set_creation_gridlines(chart, x_is_numeric)
 	if spec.trendline != "none":
 		try:
 			_set_trendline(
@@ -2068,6 +2122,7 @@ def _create_chart_from_spec(
 			"show_points": spec.show_points,
 			"connect_points": spec.connect_points,
 			"legend": False,
+			"gridlines_enabled": True,
 			"title": f"{spec.y_label} in Abhängigkeit von {spec.x_label}",
 		},
 	)

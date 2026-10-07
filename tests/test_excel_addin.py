@@ -9,11 +9,41 @@ from unittest.mock import Mock, patch
 
 import pandas as pd
 
-from excel_addin import _add_native_chart, _analysis_label, _available_trendlines, _chart_type_code, _choose_data_source, _connected_regions, _current_data_range, _display_address, _edit_chart_settings, _frame_from_values, _selected_color, _set_text_name, _source_for_chart, _source_label, _stored_color, _swap_chart_axes, choose_pending_choice, create_chart
+from excel_addin import _add_native_chart, _analysis_label, _available_trendlines, _chart_type_code, _choose_data_source, _connected_regions, _current_data_range, _display_address, _edit_chart_settings, _frame_from_values, _selected_color, _set_chart_gridlines, _set_creation_gridlines, _set_text_name, _source_for_chart, _source_label, _stored_color, _swap_chart_axes, choose_pending_choice, create_chart
 from models import ChartSpecification
 
 
 class DataSourceTests(unittest.TestCase):
+	def test_creation_gridlines_follow_actual_chart_type_and_clear_other_groups(self) -> None:
+		for chart_type, x_is_numeric, expected in (
+			(-4169, True, (True, True)),
+			(4, False, (False, True)),
+			(4, True, (True, True)),
+			(57, True, (True, False)),
+			(51, True, (True, False)),
+		):
+			with self.subTest(chart_type=chart_type, x_is_numeric=x_is_numeric):
+				axes = {
+					index: SimpleNamespace(HasMajorGridlines=True, HasMinorGridlines=True)
+					for index in (1, 2)
+				}
+				chart = SimpleNamespace(
+					ChartType=chart_type,
+					Axes=Mock(side_effect=lambda axis: axes[axis]),
+				)
+				_set_creation_gridlines(chart, x_is_numeric)
+				self.assertEqual(
+					(axes[1].HasMajorGridlines, axes[2].HasMajorGridlines),
+					expected,
+				)
+				self.assertFalse(axes[1].HasMinorGridlines)
+				self.assertFalse(axes[2].HasMinorGridlines)
+				_set_chart_gridlines(chart, False, x_is_numeric)
+				self.assertEqual(
+					(axes[1].HasMajorGridlines, axes[2].HasMajorGridlines),
+					(False, False),
+				)
+
 	def test_trendline_choices_follow_chart_type_and_numeric_domains(self) -> None:
 		all_options, degrees, periods = _available_trendlines(
 			pd.Series([1, 2, 3, 4, 5, 6, 7, 8]).to_numpy(dtype=float),
@@ -74,6 +104,14 @@ class DataSourceTests(unittest.TestCase):
 			"Output error": [0.2, 0.3, 0.4],
 		})
 		series = SimpleNamespace(ErrorBar=Mock())
+		axes = {
+			index: SimpleNamespace(
+				AxisTitle=SimpleNamespace(Text=None),
+				HasMajorGridlines=False,
+				HasMinorGridlines=False,
+			)
+			for index in (1, 2)
+		}
 		chart = SimpleNamespace(
 			ChartType=None,
 			HasTitle=None,
@@ -83,10 +121,7 @@ class DataSourceTests(unittest.TestCase):
 				NewSeries=Mock(return_value=series),
 			)),
 			DisplayBlanksAs=None,
-			Axes=Mock(side_effect=[
-				SimpleNamespace(AxisTitle=SimpleNamespace(Text=None)),
-				SimpleNamespace(AxisTitle=SimpleNamespace(Text=None)),
-			]),
+			Axes=Mock(side_effect=lambda axis: axes[axis]),
 		)
 		chart_object = SimpleNamespace(Name=None, Chart=chart)
 		chart_objects = SimpleNamespace(
@@ -134,6 +169,14 @@ class DataSourceTests(unittest.TestCase):
 	def test_native_chart_without_error_columns_does_not_add_error_bars(self) -> None:
 		frame = pd.DataFrame({"Input": [1.0, 2.0, 3.0], "Output": [2.0, 4.0, 6.0]})
 		series = SimpleNamespace(ErrorBar=Mock())
+		axes = {
+			index: SimpleNamespace(
+				AxisTitle=SimpleNamespace(Text=None),
+				HasMajorGridlines=False,
+				HasMinorGridlines=False,
+			)
+			for index in (1, 2)
+		}
 		chart = SimpleNamespace(
 			ChartType=None,
 			HasTitle=None,
@@ -143,10 +186,7 @@ class DataSourceTests(unittest.TestCase):
 				NewSeries=Mock(return_value=series),
 			)),
 			DisplayBlanksAs=None,
-			Axes=Mock(side_effect=[
-				SimpleNamespace(AxisTitle=SimpleNamespace(Text=None)),
-				SimpleNamespace(AxisTitle=SimpleNamespace(Text=None)),
-			]),
+			Axes=Mock(side_effect=lambda axis: axes[axis]),
 		)
 		chart_object = SimpleNamespace(Name=None, Chart=chart)
 		chart_objects = SimpleNamespace(Count=0, Add=Mock(return_value=chart_object))
@@ -527,6 +567,7 @@ class DataSourceTests(unittest.TestCase):
 				HasTitle=False,
 				AxisTitle=SimpleNamespace(Text=""),
 				HasMajorGridlines=False,
+				HasMinorGridlines=False,
 			)
 			for index in (1, 2)
 		}

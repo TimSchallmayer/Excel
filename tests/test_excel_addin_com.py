@@ -100,9 +100,14 @@ class ExcelAddinCOMTests(unittest.TestCase):
 				first.range("A1:B5").select()
 				with (
 					patch("excel_addin._active_book", return_value=book),
-					patch("excel_addin.analyze_with_ai", side_effect=self._analyze),
+					patch("excel_addin.analyze_with_ai", side_effect=self._analyze) as analyze,
 				):
 					create_chart()
+				analyze.assert_called_once()
+				self.assertEqual(
+					list(analyze.call_args.args[0].columns),
+					["Zeit [s]", "Strecke [m]"],
+				)
 				self.assertEqual(tuple(book.sheet_names), initial_sheet_names)
 				self.assertEqual(len(app.books), initial_book_count)
 				self.assertEqual(first.api.ChartObjects().Count, 1)
@@ -147,11 +152,18 @@ class ExcelAddinCOMTests(unittest.TestCase):
 				self.assertIn("Unabhängig: Zeit [s]", first_analysis)
 				self.assertIn("Abhängig: Strecke [m]", first_analysis)
 
+				second.activate()
+				second.range("A1:B5").select()
 				with (
 					patch("excel_addin._active_book", return_value=book),
-					patch("excel_addin.analyze_with_ai", side_effect=self._analyze),
+					patch("excel_addin.analyze_with_ai", side_effect=self._analyze) as analyze,
 				):
 					create_chart()
+				analyze.assert_called_once()
+				self.assertEqual(
+					list(analyze.call_args.args[0].columns),
+					["Kraft [N]", "Dehnung [mm]"],
+				)
 				self.assertEqual(tuple(book.sheet_names), initial_sheet_names)
 				self.assertEqual(second.api.ChartObjects().Count, 2)
 				chart_positions = {
@@ -542,6 +554,100 @@ class ExcelAddinCOMTests(unittest.TestCase):
 		finally:
 			book.close()
 			app.quit()
+
+	def test_native_chart_gridlines_follow_chart_type_and_persist_manual_state(self) -> None:
+		temporary_folder = tempfile.TemporaryDirectory()
+		app = xw.App(visible=False, add_book=True)
+		book = app.books.active
+		try:
+			cases = (
+				("Scatter", "scatter", "Zeit [s]", [0, 1, 2], (True, True)),
+				("Bar", "bar", "Monat", ["Jan", "Feb", "Mär"], (True, False)),
+				("Column", "column", "Monat", ["Jan", "Feb", "Mär"], (True, False)),
+				("CategoryLine", "line", "Monat", ["Jan", "Feb", "Mär"], (False, True)),
+				("NumericLine", "line", "Zeit [s]", [0, 1, 2], (True, True)),
+			)
+			for sheet_name, chart_type, x_name, x_values, expected in cases:
+				with self.subTest(chart_type=chart_type):
+					sheet = book.sheets.add(sheet_name)
+					rows = [
+						[x_name, "Umsatz [€]"],
+						*[list(row) for row in zip(x_values, [10, 20, 30])],
+					]
+					sheet.range("A1").value = rows
+					data_range = sheet.range(f"A1:B{len(rows)}")
+					frame = pd.DataFrame(rows[1:], columns=rows[0])
+					spec = ChartSpecification(
+						x_column=x_name,
+						y_column="Umsatz [€]",
+						x_label=x_name,
+						y_label="Umsatz [€]",
+						chart_type=chart_type,
+						connect_points=chart_type == "line",
+					)
+					chart_name = _add_native_chart(book, sheet, data_range, frame, spec)
+					chart_object = sheet.api.ChartObjects(chart_name)
+					chart_object.Activate()
+					chart = chart_object.Chart
+					expected_chart_type = _chart_type_code(
+						chart_type,
+						spec.show_points,
+						spec.connect_points,
+					)
+					self.assertEqual(int(chart.ChartType), expected_chart_type)
+					expected_major_axes = tuple(
+						bool(chart.Axes(axis).HasMajorGridlines)
+						for axis in (1, 2)
+					)
+					self.assertEqual(expected_major_axes, expected)
+					_save_chart_state(
+						book,
+						chart_name,
+						sheet.name,
+						str(data_range.address),
+						spec,
+						{"gridlines_enabled": True},
+					)
+					if chart_type == "scatter":
+						chart.Axes(1).HasMinorGridlines = True
+					_edit_chart_settings(book, "gridlines")
+					for axis_type in (1, 2):
+						axis = chart.Axes(axis_type)
+						self.assertFalse(bool(axis.HasMajorGridlines))
+						self.assertFalse(bool(axis.HasMinorGridlines))
+					self.assertFalse(_read_chart_state(book, chart_name)["settings"]["gridlines_enabled"])
+					_edit_chart_settings(book, "gridlines")
+					actual_major_axes = tuple(
+						bool(chart.Axes(axis).HasMajorGridlines)
+						for axis in (1, 2)
+					)
+					self.assertEqual(actual_major_axes, expected)
+					_edit_chart_settings(book, "gridlines")
+					with patch("excel_addin._ask_text", return_value="Gitternetzlinien bleiben aus"):
+						_edit_chart_settings(book, "title")
+					for axis_type in (1, 2):
+						axis = chart.Axes(axis_type)
+						self.assertFalse(bool(axis.HasMajorGridlines))
+						self.assertFalse(bool(axis.HasMinorGridlines))
+					self.assertFalse(_read_chart_state(book, chart_name)["settings"]["gridlines_enabled"])
+
+			workbook_path = Path(temporary_folder.name) / "gridlines.xlsx"
+			book.api.SaveAs(str(workbook_path), FileFormat=51)
+			book.close()
+			book = app.books.open(str(workbook_path))
+			for sheet_name, *_ in cases:
+				sheet = book.sheets[sheet_name]
+				chart = sheet.api.ChartObjects(1).Chart
+				chart_name = str(sheet.api.ChartObjects(1).Name)
+				self.assertFalse(_read_chart_state(book, chart_name)["settings"]["gridlines_enabled"])
+				for axis_type in (1, 2):
+					axis = chart.Axes(axis_type)
+					self.assertFalse(bool(axis.HasMajorGridlines))
+					self.assertFalse(bool(axis.HasMinorGridlines))
+		finally:
+			book.close()
+			app.quit()
+			temporary_folder.cleanup()
 
 	def test_native_chart_manual_formatting_and_text_edits(self) -> None:
 		app = xw.App(visible=False, add_book=True)

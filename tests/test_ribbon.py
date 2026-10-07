@@ -4,6 +4,7 @@ import ast
 import os
 import re
 import subprocess
+import tkinter as tk
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -14,7 +15,7 @@ from xml.etree import ElementTree
 import xlwings as xw
 import pandas as pd
 
-from excel_addin import _add_native_chart, _read_chart_state, _save_chart_state, _source_for_chart
+from excel_addin import _add_native_chart, _discover_data_sources, _read_chart_state, _save_chart_state, _show_data_source_dialog, _source_for_chart
 from excel_bridge import _add_ribbon_to_package
 from models import ChartSpecification
 
@@ -84,69 +85,74 @@ class DashboardAndBridgeTests(unittest.TestCase):
 				["Mär", 20],
 			]
 			sheet.range("Z1").select()
-			powershell = f"""
-Add-Type -AssemblyName UIAutomationClient
-Add-Type -AssemblyName UIAutomationTypes
-$desktop = [System.Windows.Automation.AutomationElement]::RootElement
-$deadline = [DateTime]::UtcNow.AddSeconds(8)
-$dialog = $null
-while ($null -eq $dialog -and [DateTime]::UtcNow -lt $deadline) {{
-    $elements = $desktop.FindAll(
-        [System.Windows.Automation.TreeScope]::Children,
-        [System.Windows.Automation.Condition]::TrueCondition
-    )
-    foreach ($element in $elements) {{
-        if ($element.Current.Name -eq 'PLVS ULTRA Graphs - Datenquelle auswählen') {{
-            $dialog = $element
-            break
-        }}
-    }}
-    if ($null -eq $dialog) {{ Start-Sleep -Milliseconds 100 }}
-}}
-$dialog = $desktop.FindFirst(
-    [System.Windows.Automation.TreeScope]::Children,
-    [System.Windows.Automation.PropertyCondition]::new(
-        [System.Windows.Automation.AutomationElement]::NameProperty,
-        'PLVS ULTRA Graphs - Datenquelle auswählen'
-    )
-)
-if ($null -eq $dialog) {{ throw 'Data-source window did not open in Excel.' }}
-$target = $dialog.FindFirst(
-    [System.Windows.Automation.TreeScope]::Descendants,
-    [System.Windows.Automation.PropertyCondition]::new(
-        [System.Windows.Automation.AutomationElement]::NameProperty,
-        'Daten: A1:B4'
-    )
-)
-if ($null -eq $target) {{ throw 'Expected workbook data source is absent from the dialog.' }}
-$target.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-Write-Output 'Visible data-source window opened and first source was clicked.'
-"""
-			automation = subprocess.Popen(
-				["powershell.exe", "-STA", "-NoProfile", "-Command", powershell],
-				stdout=subprocess.PIPE,
-				stderr=subprocess.PIPE,
-				text=True,
+			expected_sources = ["Daten: A1:B4", "Daten: D1:E4"]
+			self.assertEqual(
+				[label for _, _, label in _discover_data_sources(book)],
+				expected_sources,
 			)
-			with (
-				patch("excel_addin._active_book", return_value=book),
-				patch("excel_addin._safe_action", side_effect=lambda action: action(book)),
-				patch("excel_addin._get_ai_config", return_value={"endpoint": "test"}),
-				patch("excel_addin.analyze_with_ai", return_value=ChartSpecification(
-					x_column="Zeit",
-					y_column="Wert",
-					x_label="Zeit",
-					y_label="Wert",
-					chart_type="scatter",
-				)) as analyze,
-				patch("excel_addin._message"),
-			):
-				from excel_addin import create_chart
-				create_chart()
-			stdout, stderr = automation.communicate(timeout=30)
-			self.assertEqual(automation.returncode, 0, stdout + stderr)
-			self.assertIn("Visible data-source window opened", stdout)
+			source_dialog = {"buttons": [], "labels": [], "error": None}
+			real_button = tk.Button
+
+			def select_named_source(master, *args, **kwargs):
+				button = real_button(master, *args, **kwargs)
+				source_dialog["buttons"].append(button)
+				if len(source_dialog["buttons"]) == 1:
+					def choose_source():
+						labels = [str(item.cget("text")) for item in source_dialog["buttons"]]
+						source_dialog["labels"] = labels
+						matches = [
+							item for item in source_dialog["buttons"]
+							if str(item.cget("text")) == expected_sources[0]
+						]
+						if labels[:len(expected_sources)] != expected_sources or len(matches) != 1:
+							source_dialog["error"] = (
+								f"Unexpected source dialog buttons: {labels!r}"
+							)
+							cancel = next(
+								(item for item in source_dialog["buttons"]
+								 if str(item.cget("text")) == "Abbrechen"),
+								None,
+							)
+							if cancel is not None:
+								cancel.invoke()
+							return
+						matches[0].invoke()
+
+					master.after(100, choose_source)
+				return button
+
+			try:
+				with (
+					patch("excel_addin._active_book", return_value=book),
+					patch("excel_addin._safe_action", side_effect=lambda action: action(book)),
+					patch("excel_addin._get_ai_config", return_value={"endpoint": "test"}),
+					patch("excel_addin._show_data_source_dialog", wraps=_show_data_source_dialog) as show_dialog,
+					patch("tkinter.Button", side_effect=select_named_source),
+					patch("excel_addin.analyze_with_ai", return_value=ChartSpecification(
+						x_column="Zeit",
+						y_column="Wert",
+						x_label="Zeit",
+						y_label="Wert",
+						chart_type="scatter",
+					)) as analyze,
+					patch("excel_addin._message"),
+				):
+					from excel_addin import create_chart
+					create_chart()
+			finally:
+				for button in source_dialog["buttons"]:
+					try:
+						button.destroy()
+					except tk.TclError:
+						pass
+			self.assertIsNone(source_dialog["error"], source_dialog["error"])
+			self.assertEqual(
+				source_dialog["labels"][:len(expected_sources)],
+				expected_sources,
+			)
+			show_dialog.assert_called_once_with(book, expected_sources)
 			analyze.assert_called_once()
+			self.assertEqual(list(analyze.call_args.args[0].columns), ["Zeit", "Wert"])
 			self.assertEqual(analyze.call_args.args[0]["Wert"].tolist(), [4, 7, 9])
 			self.assertEqual(sheet.api.ChartObjects().Count, 1)
 			self.assertEqual(
@@ -547,6 +553,12 @@ Write-Output "Visible Ribbon tab: $($tab.Current.Name)"
 			app.api.Run(macro, "excel_addin.set_text_font_name", 11)
 			self.assertEqual(str(chart.ChartTitle.Font.Name), "Segoe UI", str(app.api.StatusBar))
 			refresh_macro = f"'{addin_path.resolve()}'!PLVS_RefreshAnalysis"
+			app.api.Run(macro, "excel_addin.toggle_gridlines")
+			for axis_type in (1, 2):
+				self.assertFalse(bool(chart.Axes(axis_type).HasMajorGridlines), str(app.api.StatusBar))
+			app.api.Run(refresh_macro)
+			for axis_type in (1, 2):
+				self.assertFalse(bool(chart.Axes(axis_type).HasMajorGridlines), str(app.api.StatusBar))
 			selection_macro = f"'{addin_path.resolve()}'!PLVS_RibbonChartTypeIndex"
 			for selection, expected_type, expected_markers, expected_connection in (
 				(0, -4169, True, False),
@@ -572,6 +584,8 @@ Write-Output "Visible Ribbon tab: $($tab.Current.Name)"
 					65,
 					"Changing the selected chart modified the other chart.",
 				)
+				for axis_type in (1, 2):
+					self.assertFalse(bool(chart.Axes(axis_type).HasMajorGridlines), str(app.api.StatusBar))
 		finally:
 			if addin is not None:
 				addin.Installed = was_installed
