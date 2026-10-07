@@ -62,6 +62,23 @@ Der Build schreibt `dist\PLVS ULTRA Graphs.xlam` und
 nach dem Build entfernt. Enthalten sind nur die `.xlam` mit eingebettetem VBA-
 und Ribbon-Inhalt, die für das Add-in benötigten Python-Module, CPython samt
 Tcl/Tk sowie die fest gepinnten Pakete aus `requirements-runtime.txt`.
+Die `.xlam` im `dist`-Ordner verwendet den Standardpfad
+`%LOCALAPPDATA%\PLVS ULTRA Graphs`; bei einer benutzerdefinierten Installation
+setzt der Installer die tatsächlichen Pfade in der installierten `.xlam`.
+Der Installations-Regressionstest prüft `GetConfig` und führt einen echten
+xlwings-`RunPython`-Aufruf mit der gebündelten Runtime aus:
+
+```powershell
+.\installer\test_installed_runtime.ps1 -SetupPath .\dist\PLVS-ULTRA-Graphs-Setup.exe
+```
+
+Nach der Installation prüft dieser zusätzliche Regressionstest den normalen
+Excel-Start, den tatsächlich automatisch geladenen Add-in-Pfad und einen
+Diagrammaufruf über xlwings `RunPython`:
+
+```powershell
+.\installer\test_normal_excel_startup.ps1
+```
 
 ## Verwendung
 

@@ -126,11 +126,11 @@ def _set_addin_xlwings_config(book: xw.Book, release_mode: bool = False) -> None
 	else:
 		config_sheet = book.sheets.add(config_name, before=book.sheets[0])
 	interpreter = (
-		"@PLVS_INSTALL_DIR@\\runtime\\python.exe"
+		"%LOCALAPPDATA%\\PLVS ULTRA Graphs\\runtime\\python.exe"
 		if release_mode
 		else str(Path(sys.executable).resolve())
 	)
-	pythonpath = "@PLVS_INSTALL_DIR@" if release_mode else str(PROJECT_ROOT)
+	pythonpath = "%LOCALAPPDATA%\\PLVS ULTRA Graphs" if release_mode else str(PROJECT_ROOT)
 	config_sheet.range("A1:B2").value = [
 		["INTERPRETER_WIN", interpreter],
 		["PYTHONPATH", pythonpath],
