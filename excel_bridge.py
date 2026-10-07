@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
@@ -27,6 +28,8 @@ XLAM_FILE_FORMAT = 55
 PACKAGE_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 UI_RELATIONSHIP = "http://schemas.microsoft.com/office/2006/relationships/ui/extensibility"
+MC_NAMESPACE = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+X15AC_NAMESPACE = "http://schemas.microsoft.com/office/spreadsheetml/2010/11/ac"
 
 SAMPLE_ROWS = [
 	["Zeit [s]", "Strecke [m]", "Strecke Fehler [m]"],
@@ -116,20 +119,43 @@ def _install_addin_vba(book: xw.Book) -> None:
 		components.Import(str(module_path))
 
 
-def _set_addin_xlwings_config(book: xw.Book) -> None:
+def _set_addin_xlwings_config(book: xw.Book, release_mode: bool = False) -> None:
 	config_name = "myaddin.conf"
 	if config_name in book.sheet_names:
 		config_sheet = book.sheets[config_name]
 	else:
 		config_sheet = book.sheets.add(config_name, before=book.sheets[0])
+	interpreter = (
+		"@PLVS_INSTALL_DIR@\\runtime\\python.exe"
+		if release_mode
+		else str(Path(sys.executable).resolve())
+	)
+	pythonpath = "@PLVS_INSTALL_DIR@" if release_mode else str(PROJECT_ROOT)
 	config_sheet.range("A1:B2").value = [
-		["INTERPRETER_WIN", str(Path(sys.executable).resolve())],
-		["PYTHONPATH", str(PROJECT_ROOT)],
+		["INTERPRETER_WIN", interpreter],
+		["PYTHONPATH", pythonpath],
 	]
 	config_sheet.api.Visible = 2
 
 
-def _add_ribbon_to_package(addin_path: Path) -> None:
+def _remove_workbook_absolute_path(workbook_xml: bytes) -> bytes:
+	alternate_content = re.compile(
+		r"<(?P<prefix>[\w.-]+):AlternateContent\b[^>]*>.*?"
+		r"</(?P=prefix):AlternateContent\s*>",
+		re.DOTALL,
+	)
+
+	def remove_absolute_path_block(match: re.Match[str]) -> str:
+		block = match.group(0)
+		if re.search(r"<[\w.-]+:absPath\b", block):
+			return ""
+		return block
+
+	text = workbook_xml.decode("utf-8")
+	return alternate_content.sub(remove_absolute_path_block, text).encode("utf-8")
+
+
+def _add_ribbon_to_package(addin_path: Path, release_mode: bool = False) -> None:
 	with zipfile.ZipFile(addin_path, "r") as source:
 		files = {info.filename: (info, source.read(info.filename)) for info in source.infolist()}
 	if "customUI/customUI.xml" in files:
@@ -173,6 +199,12 @@ def _add_ribbon_to_package(addin_path: Path) -> None:
 		files[relationships_path][0],
 		ET.tostring(relationships_root, encoding="utf-8", xml_declaration=True),
 	)
+	if release_mode:
+		workbook_path = "xl/workbook.xml"
+		files[workbook_path] = (
+			files[workbook_path][0],
+			_remove_workbook_absolute_path(files[workbook_path][1]),
+		)
 	with tempfile.NamedTemporaryFile(dir=addin_path.parent, suffix=".xlam", delete=False) as temporary:
 		temporary_path = Path(temporary.name)
 	try:
@@ -184,7 +216,7 @@ def _add_ribbon_to_package(addin_path: Path) -> None:
 		temporary_path.unlink(missing_ok=True)
 
 
-def create_addin(output_path: Path | None = None) -> Path:
+def create_addin(output_path: Path | None = None, release_mode: bool = False) -> Path:
 	"""Erzeugt das PLVS Ribbon-Add-in auf Basis der aktiven xlwings Add-in Vorlage."""
 	if output_path is None:
 		output_path = PROJECT_ROOT / "dist" / "PLVS ULTRA Graphs.xlam"
@@ -198,12 +230,12 @@ def create_addin(output_path: Path | None = None) -> Path:
 			sheet.delete()
 		book.sheets[0].name = PRODUCT_NAME
 		_install_addin_vba(book)
-		_set_addin_xlwings_config(book)
+		_set_addin_xlwings_config(book, release_mode=release_mode)
 		book.api.SaveAs(str(output_path), FileFormat=XLAM_FILE_FORMAT)
 	finally:
 		book.close()
 		app.quit()
-	_add_ribbon_to_package(output_path)
+	_add_ribbon_to_package(output_path, release_mode=release_mode)
 	return output_path
 
 
@@ -270,12 +302,13 @@ def main() -> int:
 	install_parser.add_argument("--output", type=Path)
 	addin_parser = subparsers.add_parser("create-addin", help="Eigenständiges PLVS Ribbon-Add-in erstellen")
 	addin_parser.add_argument("--output", type=Path)
+	addin_parser.add_argument("--release", action="store_true", help="portable Runtime-Pfade für Installer setzen")
 	args = parser.parse_args()
 	try:
 		if args.command == "create-template":
 			result = create_template(args.output)
 		elif args.command == "create-addin":
-			result = create_addin(args.output)
+			result = create_addin(args.output, release_mode=args.release)
 		else:
 			result = install_in_copy(args.workbook, args.output)
 		print(f"{PRODUCT_NAME} erstellt: {result}")
