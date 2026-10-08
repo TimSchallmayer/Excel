@@ -1004,6 +1004,13 @@ def _stored_color(value: Any) -> int:
 	return value
 
 
+def _set_series_line_color(series: Any, color: int, chart_type: int) -> None:
+	if chart_type == 4:
+		series.Border.Color = color
+	else:
+		series.Format.Line.ForeColor.RGB = color
+
+
 def _restore_saved_series_format(series: Any, spec: ChartSpecification, settings: dict[str, Any]) -> None:
 	marker_chart = spec.chart_type in {"scatter", "scatter_lines", "line", "line_scatter"}
 	filled_chart = spec.chart_type in {"bar", "column"}
@@ -1012,26 +1019,31 @@ def _restore_saved_series_format(series: Any, spec: ChartSpecification, settings
 		series.Format.Fill.ForeColor.RGB = rgb
 	elif "series_color" in settings and marker_chart:
 		rgb = _stored_color(settings["series_color"])
-		series.Format.Line.ForeColor.RGB = rgb
+		_set_series_line_color(series, rgb, 4 if spec.chart_type == "line" else 0)
 		if spec.chart_type != "line":
 			series.MarkerForegroundColor = rgb
 			series.MarkerBackgroundColor = rgb
 	if "line_color" in settings and marker_chart:
-		series.Format.Line.ForeColor.RGB = _stored_color(settings["line_color"])
+		_set_series_line_color(
+			series,
+			_stored_color(settings["line_color"]),
+			4 if spec.chart_type == "line" else 0,
+		)
 	if "line_width" in settings:
 		line_width = float(settings["line_width"])
 		if math.isfinite(line_width) and 0.75 <= line_width <= 6:
 			series.Format.Line.Weight = line_width
-	if "point_size" in settings and marker_chart:
+	if "point_size" in settings and marker_chart and spec.chart_type != "line":
 		series.MarkerSize = float(settings["point_size"])
 
 
 def _capture_series_format(series: Any, chart_type: int) -> dict[str, Any]:
 	state: dict[str, Any] = {}
-	line_color = int(series.Format.Line.ForeColor.RGB)
+	if bool(series.Format.Line.Visible):
+		line_color = int(series.Format.Line.ForeColor.RGB)
+		if 0 <= line_color <= 0xFFFFFF:
+			state["line_color"] = line_color
 	line_width = float(series.Format.Line.Weight)
-	if 0 <= line_color <= 0xFFFFFF:
-		state["line_color"] = line_color
 	if math.isfinite(line_width) and 0.75 <= line_width <= 6:
 		state["line_width"] = line_width
 	if chart_type in {51, 57}:
@@ -1045,6 +1057,16 @@ def _capture_series_format(series: Any, chart_type: int) -> dict[str, Any]:
 			state["marker_foreground"] = marker_foreground
 		if 0 <= marker_background <= 0xFFFFFF:
 			state["marker_background"] = marker_background
+		if "line_color" not in state:
+			marker_color = next(
+				(
+					color for color in (marker_foreground, marker_background)
+					if 0 <= color <= 0xFFFFFF
+				),
+				None,
+			)
+			if marker_color is not None:
+				state["line_color"] = marker_color
 		marker_size = int(series.MarkerSize)
 		if 2 <= marker_size <= 72:
 			state["marker_size"] = marker_size
@@ -1052,28 +1074,37 @@ def _capture_series_format(series: Any, chart_type: int) -> dict[str, Any]:
 	return state
 
 
-def _apply_series_format(series: Any, old_format: dict[str, Any], chart_type: int) -> None:
-	line_width = old_format.get("line_width")
+def _apply_series_colors(series: Any, old_format: dict[str, Any], chart_type: int) -> None:
 	if chart_type in {51, 57}:
 		fill_color = old_format.get("fill_color", old_format.get("line_color"))
 		if fill_color is not None:
 			series.Format.Fill.ForeColor.RGB = fill_color
 		if "line_color" in old_format:
 			series.Format.Line.ForeColor.RGB = old_format["line_color"]
+	elif chart_type in {-4169, 4, 65, 74, 75}:
+		if "line_color" in old_format:
+			_set_series_line_color(series, old_format["line_color"], chart_type)
+		if chart_type != 4:
+			if "marker_foreground" in old_format:
+				series.MarkerForegroundColor = old_format["marker_foreground"]
+			if "marker_background" in old_format:
+				series.MarkerBackgroundColor = old_format["marker_background"]
+
+
+def _apply_series_format(series: Any, old_format: dict[str, Any], chart_type: int) -> None:
+	_apply_series_colors(series, old_format, chart_type)
+	line_width = old_format.get("line_width")
+	if chart_type in {51, 57}:
 		if line_width is not None:
 			series.Format.Line.Weight = line_width
 	elif chart_type in {-4169, 4, 65, 74, 75}:
-		if "line_color" in old_format:
-			series.Format.Line.ForeColor.RGB = old_format["line_color"]
 		if line_width is not None:
 			series.Format.Line.Weight = line_width
-		if "marker_foreground" in old_format and "marker_background" in old_format:
-			series.MarkerForegroundColor = old_format["marker_foreground"]
-			series.MarkerBackgroundColor = old_format["marker_background"]
-		if "marker_size" in old_format:
-			series.MarkerSize = old_format["marker_size"]
-		if "marker_style" in old_format:
-			series.MarkerStyle = old_format["marker_style"]
+		if chart_type != 4:
+			if "marker_size" in old_format:
+				series.MarkerSize = old_format["marker_size"]
+			if "marker_style" in old_format:
+				series.MarkerStyle = old_format["marker_style"]
 
 
 def _sync_chart_state_from_excel(chart: Any, spec: ChartSpecification, settings: dict[str, Any]) -> None:
@@ -1437,7 +1468,7 @@ def _edit_chart_settings(
 				series.Format.Line.ForeColor.RGB = old_format["line_color"]
 			if "line_width" in old_format:
 				series.Format.Line.Weight = old_format["line_width"]
-			if "point_size" in settings:
+			if "point_size" in settings and spec.chart_type != "line":
 				series.MarkerSize = float(settings["point_size"])
 			series.MarkerStyle = 8 if spec.show_points else -4142
 			if int(series.MarkerStyle) != (8 if spec.show_points else -4142):
@@ -1447,9 +1478,19 @@ def _edit_chart_settings(
 		chart.HasLegend = old_legend
 		if bool(chart.HasLegend) != old_legend:
 			raise RuntimeError("Excel hat den Legendenzustand beim Diagrammtypwechsel nicht beibehalten.")
-		chart.ChartType = target_chart_type
 		if int(chart.ChartType) != target_chart_type:
 			raise RuntimeError("Excel hat den Diagrammtyp nach der Formatübernahme zurückgesetzt.")
+		series = chart.SeriesCollection(1)
+		_apply_series_colors(series, old_format, target_chart_type)
+		_restore_saved_series_format(
+			series,
+			spec,
+			{
+				key: settings[key]
+				for key in ("series_color", "line_color")
+				if key in settings
+			},
+		)
 		if isinstance(settings.get("gridlines_enabled"), bool):
 			_set_chart_gridlines(chart, settings["gridlines_enabled"], bool(np.any(np.isfinite(x_values))))
 	elif action in {"series_color", "line_color"}:
@@ -1461,7 +1502,7 @@ def _edit_chart_settings(
 			if filled_chart:
 				series.Format.Fill.ForeColor.RGB = rgb
 			elif marker_chart:
-				series.Format.Line.ForeColor.RGB = rgb
+				_set_series_line_color(series, rgb, native_type)
 				if native_type != 4:
 					series.MarkerForegroundColor = rgb
 					series.MarkerBackgroundColor = rgb
@@ -1471,7 +1512,7 @@ def _edit_chart_settings(
 		elif action == "line_color":
 			if not marker_chart:
 				raise ValueError("Eine Linienfarbe ist für diesen Diagrammtyp nicht verfügbar.")
-			series.Format.Line.ForeColor.RGB = rgb
+			_set_series_line_color(series, rgb, native_type)
 			settings["line_color"] = rgb
 	elif action in {"line_width", "point_size"}:
 		if action == "line_width":
